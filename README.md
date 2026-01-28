@@ -26,6 +26,8 @@ python "behavior_tree_wiz.py"
 3.  **Convert**: Click "Convert & Save".
 
 ## Documentation
+<img width="1048" height="778" alt="image" src="https://github.com/user-attachments/assets/75d2d262-6394-4478-912f-967a741d6849" />
+These are the currently recognized node types. Decorators to be added soon...
 
 For a deep dive into the system architecture, design patterns, and extensibility guides, please refer to the:
-**[Full Technical Documentation](./XMLtoSimbaConverter_Technical_Docs.md)**
+**[Full Technical Documentation](./docs.md)**
