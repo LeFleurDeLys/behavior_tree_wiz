@@ -2,13 +2,14 @@
 
 This tool converts visual Behavior Trees designed in XML format (e.g., from diagrams.net or draw.io) into executable Pascal/Simba code for OSRS botting. It bridges the gap between visual design and the `WaspLib` behavior tree implementation.
 
+<img width="799" height="634" alt="image" src="https://github.com/user-attachments/assets/98f9f67a-9e14-4055-a8da-bdc33e02066a" />
+
 ## Features
 - **Visual to Code**: Converts diagrammatic nodes (Selectors, Sequences, Actions) into valid Simba code.
 - **Stub Generation**: Automatically generates function stubs for actions and conditions defined in your diagram.
 - **Smart Sorting**: Executes nodes in visual left-to-right order.
 - **Parameter Support**: Handles parameterized actions (e.g., `Eat(Food)`) by generating wrapper functions.
-<img width="799" height="634" alt="image" src="https://github.com/user-attachments/assets/98f9f67a-9e14-4055-a8da-bdc33e02066a" />
-
+- 
 ### Running the Tool
 Run behavior_tree_wiz.exe or the equivalent python script.
 
