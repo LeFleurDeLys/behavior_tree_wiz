@@ -1,6 +1,6 @@
 # XML to Simba Converter
 
-This tool converts visual Behavior Trees designed in XML format (e.g., from diagrams.net or draw.io) into executable Pascal/Simba code for OSRS botting. It bridges the gap between visual design and the `WaspLib` behavior tree implementation.
+This tool converts visual Behavior Trees designed in XML format (e.g., from diagrams.net or draw.io) into an executable Simba 2000 script skelleton. It bridges the gap between visual design and the `WaspLib` behavior tree implementation .
 
 <img width="799" height="634" alt="image" src="https://github.com/user-attachments/assets/98f9f67a-9e14-4055-a8da-bdc33e02066a" />
 
