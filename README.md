@@ -8,18 +8,8 @@ This tool converts visual Behavior Trees designed in XML format (e.g., from diag
 - **Smart Sorting**: Executes nodes in visual left-to-right order.
 - **Parameter Support**: Handles parameterized actions (e.g., `Eat(Food)`) by generating wrapper functions.
 
-## Quick Start
-
-### Prerequisites
--You can either run the executable, or compile yourself with Python.
-
 ### Running the Tool
-Run behavior.tree_wiz.exe
-or
-Open a terminal in this directory and run:
-```bash
-python "behavior_tree_wiz.py"
-```
+Run behavior_tree_wiz.exe or the equivalent python script.
 
 1.  **Source XML**: Select your `.xml` file containing the behavior tree diagram (which uses the given node types in `ExampleTree.xml`).
 2.  **Output Simba**: Choose where to save the generated `.simba` script.
