@@ -16,10 +16,10 @@ The application operates by parsing an input XML file, interpreting geometric sh
 
 ### 1.1 User Interface Capabilities
 The converter provides a user-friendly GUI to manage the conversion process:
-*   **File Selection**: Intuitive inputs for selecting the Source XML file and defining the Output Simba file path.
+*   **File Selection**: Browses Windows Explorer for selecting the Source XML file and defining the Output Simba file path. (The tool only creates from scratch at the moment, cannnot yet use it to generate new structures on the tree.)
 *   **Template Customization**: Text areas to edit and customize the Header and Footer code that will be wrapped around the generated tree.
-*   **Persistence**: A "Save Header/Footer as Default" checkbox that saves user preferences to a local JSON file for future sessions.
-*   **Execution**: A prominent "Convert & Save" button that triggers the process and provides immediate popup feedback on success or failure.
+*   **Persistence**: A "Save Header/Footer as Default" checkbox that saves user preferences to a local JSON file for future sessions (file is generatedin thefolder the script/exe is found.)
+*   **Execution**: Convert & Save button with confirmation message for failure or success. 
 
 ---
 
