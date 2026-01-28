@@ -7,6 +7,7 @@ This tool converts visual Behavior Trees designed in XML format (e.g., from diag
 - **Stub Generation**: Automatically generates function stubs for actions and conditions defined in your diagram.
 - **Smart Sorting**: Executes nodes in visual left-to-right order.
 - **Parameter Support**: Handles parameterized actions (e.g., `Eat(Food)`) by generating wrapper functions.
+<img width="799" height="634" alt="image" src="https://github.com/user-attachments/assets/98f9f67a-9e14-4055-a8da-bdc33e02066a" />
 
 ### Running the Tool
 Run behavior_tree_wiz.exe or the equivalent python script.
@@ -14,6 +15,12 @@ Run behavior_tree_wiz.exe or the equivalent python script.
 1.  **Source XML**: Select your `.xml` file containing the behavior tree diagram (which uses the given node types in `ExampleTree.xml`).
 2.  **Output Simba**: Choose where to save the generated `.simba` script.
 3.  **Convert**: Click "Convert & Save".
+
+## Creates Conditions & Actions Placeholder Stubs 
+<img width="799" height="439" alt="image" src="https://github.com/user-attachments/assets/b6b43709-5eca-4dc9-b45a-b2fe7d906ba7" />
+
+## Generates the whole behavior tree automatically
+<img width="703" height="746" alt="image" src="https://github.com/user-attachments/assets/2824b72c-ba53-4288-b5d8-224c0abae0d0" />
 
 ## Available Nodes at the Moment
 <img width="1048" height="778" alt="image" src="https://github.com/user-attachments/assets/75d2d262-6394-4478-912f-967a741d6849" />
