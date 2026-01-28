@@ -11,12 +11,12 @@ This tool converts visual Behavior Trees designed in XML format (e.g., from diag
 ## Quick Start
 
 ### Prerequisites
-- Python 3.x
-- `tkinter` (usually included with Python on Windows)
+-You can either run the executable, or compile yourself with Python.
 
 ### Running the Tool
+Run behavior.tree_wiz.exe
+or
 Open a terminal in this directory and run:
-
 ```bash
 python "behavior_tree_wiz.py"
 ```
