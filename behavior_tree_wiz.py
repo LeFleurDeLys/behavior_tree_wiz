@@ -179,7 +179,7 @@ class GraphParser:
                     if val and "<" in val:
                         val = re.sub(r'<[^>]+>', '', val)
                     raw_edges.append((source, target, val, cell_id))
-            elif cell.get('vertex') == '1':
+            elif cell.get('vertex') == '1' and 'edgeLabel' not in cell.get('style', ''):
                 self.cells[cell_id] = cell
             elif parent_id and val:
                 # Potential label attached to an edge

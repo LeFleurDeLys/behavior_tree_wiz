@@ -1,0 +1,128 @@
+{$I WaspLib/osrs.simba}
+{$I behaviortree.simba}
+
+type
+  TBot = record
+    Tree: TBehaviorTree;
+  end;
+
+// ---------------------------------------------------------
+// Methods
+// ---------------------------------------------------------
+
+function TBot.AdjustCameraToBank(): EBTStatus;
+begin
+  WriteLn('Action : AdjustCameraToBank');
+  Result := EBTStatus.Success;
+end;
+
+function TBot.HandleLogin(): EBTStatus;
+begin
+  WriteLn('Action : HandleLogin');
+  Result := EBTStatus.Success;
+end;
+
+function TBot.IsBankClickable(): Boolean;
+begin
+  WriteLn('Action : IsBankClickable');
+  Result := True;
+end;
+
+function TBot.IsBankNearby(): Boolean;
+begin
+  WriteLn('Action : IsBankNearby');
+  Result := True;
+end;
+
+function TBot.IsBankOffCamera(): Boolean;
+begin
+  WriteLn('Action : IsBankOffCamera');
+  Result := True;
+end;
+
+function TBot.IsBankOnMM(): Boolean;
+begin
+  WriteLn('Action : IsBankOnMM');
+  Result := True;
+end;
+
+function TBot.IsLoggedOut(): Boolean;
+begin
+  WriteLn('Action : IsLoggedOut');
+  Result := True;
+end;
+
+function TBot.IsOutOfKeys(): Boolean;
+begin
+  WriteLn('Action : IsOutOfKeys');
+  Result := True;
+end;
+
+function TBot.OpenBank(): EBTStatus;
+begin
+  WriteLn('Action : OpenBank');
+  Result := EBTStatus.Success;
+end;
+
+function TBot.WalkToBank(): EBTStatus;
+begin
+  WriteLn('Action : WalkToBank');
+  Result := EBTStatus.Success;
+end;
+
+
+procedure TBot.Init();
+begin
+  Self.Tree.Setup('MyBot');
+  // Generated Tree
+  Self.Tree.Root := Self.Tree.CreateSelector('RootNode', [
+  Self.Tree.CreateSequence('→', [
+    Self.Tree.CreateCondition('IsLoggedOut', @Self.IsLoggedOut),
+
+    Self.Tree.CreateAction('HandleLogin', @Self.HandleLogin)
+  ]),
+
+  Self.Tree.CreateSequence('→', [
+    Self.Tree.CreateCondition('IsOutOfKeys', @Self.IsOutOfKeys),
+
+    Self.Tree.CreateSelector('Selector_IsBankTimeLocation', [
+      Self.Tree.CreateSequence('→', [
+        Self.Tree.CreateCondition('IsBankNearby', @Self.IsBankNearby),
+
+        Self.Tree.CreateSelector('Selector_IsBankTimeLocation', [
+          Self.Tree.CreateSequence('→', [
+            Self.Tree.CreateCondition('IsBankClickable', @Self.IsBankClickable),
+
+            Self.Tree.CreateAction('OpenBank', @Self.OpenBank)
+          ]),
+
+          Self.Tree.CreateWeightedSelector('WeightedSelector_', [
+            Self.Tree.CreateSequence('Sequence_IsBankOnMM', [
+              Self.Tree.CreateCondition('IsBankOnMM', @Self.IsBankOnMM),
+
+              Self.Tree.CreateAction('WalkToBank', @Self.WalkToBank)
+            ]),
+
+            Self.Tree.CreateSequence('Sequence_IsBankOffCamera', [
+              Self.Tree.CreateCondition('IsBankOffCamera', @Self.IsBankOffCamera),
+
+              Self.Tree.CreateAction('AdjustCameraToBank', @Self.AdjustCameraToBank)
+            ])
+          ], [0.77, 0.23])
+        ])
+      ])
+    ])
+  ])
+]);
+
+  Self.Tree.PrintStructure();
+  AddOnTerminate(@Self.Tree.Free);
+end;
+
+var
+  Bot: TBot;
+begin
+  Bot.Init();
+  while True do
+    Bot.Tree.Tick();
+end.
