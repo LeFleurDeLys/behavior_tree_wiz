@@ -1,20 +1,31 @@
 # XML to Simba Converter
 
-This tool converts visual Behavior Trees designed in XML format (e.g., from diagrams.net or draw.io) into executable Pascal/Simba code for OSRS botting. It bridges the gap between visual design and the `WaspLib` behavior tree implementation.
-
+This tool converts visual behavior trees designed in XML format (e.g., from diagrams.net or draw.io) into an executable Simba 2000 script skelleton. It bridges the gap between visual design and the `WaspLib` behavior tree implementation .
 ## Features
-- **Visual to Code**: Converts diagrammatic nodes (Selectors, Sequences, Actions) into valid Simba code.
+- **Visual to Code**: Converts diagrammatic nodes (Selectors, Sequences, Actions) into valid Simba code compatible with the behavior tree library.
 - **Stub Generation**: Automatically generates function stubs for actions and conditions defined in your diagram.
 - **Smart Sorting**: Executes nodes in visual left-to-right order.
 - **Memory Support**: Enable memory on Sequences and Selectors by simply using rounded rectangles in your diagram.
 - **Parameter Support**: Handles parameterized actions (e.g., `Eat(Food)`) by generating wrapper functions.
-
+  
 ### Running the Tool
 Run behavior_tree_wiz.exe or the equivalent python script.
 
 1.  **Source XML**: Select your `.xml` file containing the behavior tree diagram (which uses the given node types in `ExampleTree.xml`).
 2.  **Output Simba**: Choose where to save the generated `.simba` script.
-3.  **Convert**: Click "Convert & Save".
+3.  **Header & Footer**: You can add whatever you want there, the generated tree and functions will appear sandwiched right between the header and footer you put in.
+4.  **Save as default**: Will create a small file where script was ran to save the default header and footer.
+5.  **Convert**: Click "Convert & Save".
+   
+
+<img width="799" height="634" alt="image" src="https://github.com/user-attachments/assets/98f9f67a-9e14-4055-a8da-bdc33e02066a" />
+
+
+## Creates Conditions & Actions Placeholder Stubs 
+<img width="799" height="439" alt="image" src="https://github.com/user-attachments/assets/b6b43709-5eca-4dc9-b45a-b2fe7d906ba7" />
+
+## Generates the whole behavior tree automatically
+<img width="703" height="746" alt="image" src="https://github.com/user-attachments/assets/2824b72c-ba53-4288-b5d8-224c0abae0d0" />
 
 ## Available Nodes at the Moment
 <img width="1048" height="778" alt="image" src="https://github.com/user-attachments/assets/75d2d262-6394-4478-912f-967a741d6849" />
