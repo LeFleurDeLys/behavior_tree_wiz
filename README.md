@@ -6,6 +6,7 @@ This tool converts visual Behavior Trees designed in XML format (e.g., from diag
 - **Visual to Code**: Converts diagrammatic nodes (Selectors, Sequences, Actions) into valid Simba code.
 - **Stub Generation**: Automatically generates function stubs for actions and conditions defined in your diagram.
 - **Smart Sorting**: Executes nodes in visual left-to-right order.
+- **Memory Support**: Enable memory on Sequences and Selectors by simply using rounded rectangles in your diagram.
 - **Parameter Support**: Handles parameterized actions (e.g., `Eat(Food)`) by generating wrapper functions.
 
 ### Running the Tool

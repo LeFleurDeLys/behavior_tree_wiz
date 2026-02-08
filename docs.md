@@ -13,6 +13,7 @@ The application operates by parsing an input XML file, interpreting geometric sh
 *   **Recursive Structure**: It systematically constructs the nested `Self.Tree` calls (e.g., `Self.Tree.Selector(...)`) to mirror the tree's depth and breadth.
 *   **Stub Generation**: It automatically generates function stubs (e.g., `function ActionName(): Boolean;`) for every discovered Action and Condition, allowing the code to compile immediately without "unknown identifier" errors.
 *   **Wrapper Generation**: For nodes with arguments (e.g., `Eat(Food)`), it generates specific wrapper functions to bridge the generic tree interface with the specific parameterized calls.
+*   **Memory Detection**: It detects rounded rectangles in the diagram and automatically enables the 'Memory' flag for the corresponding Selector or Sequence in the generated code.
 
 ### 1.1 User Interface Capabilities
 The converter provides a user-friendly GUI to manage the conversion process:
@@ -57,6 +58,7 @@ The conversion process follows a linear pipeline:
 2.  **XML Parsing & Graph Reconstruction** (`GraphParser.parse`):
     *   **Cell Extraction**: Iterates through all `mxCell` elements to separate vertices (nodes) from edges (connections).
     *   **Geometry Calculation**: Calculates absolute (X, Y) coordinates for every node, handling nested parent groups if necessary.
+    *   **Memory Attribute**: Checks the cell style for `rounded=1`. If present, the node is flagged as having memory.
     *   **Node Type Determination**: Analyzes node labels and shapes to determine the specific node type. The logic applies the following checks in order of precedence (High to Low):
         *   **ParallelSelector**: Label contains "ParallelSelector" OR "?P"
         *   **ParallelSequence**: Label contains "ParallelSequence" OR "→→" (or multiple arrows)
@@ -75,6 +77,7 @@ The conversion process follows a linear pipeline:
     *   It requests the appropriate strategy from `NodeFactory`.
     *   **Recursive Traversal**: The strategy generates code for the current node and recursively calls `generate_node` for all children.
     *   **Method Registration**: Leaf nodes register their function names and parameters with the generator during this pass.
+    *   **Memory Injection**: For Selector and Sequence nodes flagged with memory, it appends a `True` argument to the constructor (e.g., `Self.Tree.Selector(..., True)`).
 
 4.  **Stub & Wrapper Synthesis**:
     *   `generate_placeholders()` iterates through registered methods to create Pascal function stubs (`function TBot.ActionName...`).

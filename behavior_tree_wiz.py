@@ -12,7 +12,7 @@ from typing import List, Dict, Optional, Any
 # ==========================================
 
 class BTNode:
-    def __init__(self, node_id: str, label: str, node_type: str, geometry_x: float = 0, geometry_y: float = 0):
+    def __init__(self, node_id: str, label: str, node_type: str, geometry_x: float = 0, geometry_y: float = 0, has_memory: bool = False):
         self.id = node_id
         self.label = label
         self.node_type = node_type  # 'Selector', 'Sequence', 'Condition', 'Action', 'Root', 'RandomSelector', 'WeightedSelector'
@@ -20,6 +20,7 @@ class BTNode:
         self.child_weights: List[float] = [] # Weights for children if parent is WeightedSelector
         self.geometry_x = geometry_x
         self.geometry_y = geometry_y
+        self.has_memory = has_memory
 
     def add_child(self, child: 'BTNode', weight: float = 0.0):
         self.children.append(child)
@@ -63,7 +64,12 @@ class CompositeStrategy(GenerationStrategy):
             child_codes.append(generator_ref.generate_node(child, indent_level + 1))
         
         simba_code += ",\n\n".join(child_codes)
-        simba_code += f"\n{indent}])"
+        
+        closing_args = ""
+        if node.has_memory and self.method_name in ['CreateSelector', 'CreateSequence']:
+            closing_args = ", True"
+            
+        simba_code += f"\n{indent}]{closing_args})"
         return simba_code
 
 class LeafStrategy(GenerationStrategy):
@@ -195,9 +201,9 @@ class GraphParser:
         # 2. Identify Logical Nodes
         logical_nodes: Dict[str, BTNode] = {} # cell_id -> BTNode
 
-        def get_node_info(cell_id: str) -> tuple[str, str, float, float]:
+        def get_node_info(cell_id: str) -> tuple[str, str, float, float, bool]:
             main_cell = self.cells.get(cell_id)
-            if not main_cell: return ("Unknown", "Action", 0, 0)
+            if not main_cell: return ("Unknown", "Action", 0, 0, False)
 
             geo = main_cell.find('mxGeometry')
             x = float(geo.get('x', 0)) if geo is not None else 0
@@ -217,6 +223,8 @@ class GraphParser:
 
             label = main_cell.get('value', '')
             style = main_cell.get('style', '')
+
+            has_memory = "rounded=1" in style
 
             if label and "<" in label:
                 label = re.sub(r'<[^>]+>', '', label)
@@ -271,7 +279,7 @@ class GraphParser:
             elif "ellipse" in style or "Is" in label.split('(')[0]:
                 n_type = "Condition"
             
-            return (label, n_type, x, y)
+            return (label, n_type, x, y, has_memory)
 
         connected_ids = set()
         for s, t, w in self.edges:
@@ -279,8 +287,8 @@ class GraphParser:
             connected_ids.add(t)
             
         for cid in connected_ids:
-            label, n_type, x, y = get_node_info(cid)
-            logical_nodes[cid] = BTNode(cid, label, n_type, x, y)
+            label, n_type, x, y, has_memory = get_node_info(cid)
+            logical_nodes[cid] = BTNode(cid, label, n_type, x, y, has_memory)
 
         # 4. Link Nodes
         root_node = None
@@ -366,9 +374,9 @@ class SimbaGenerator:
         sorted_methods = sorted(self.methods.items())
         
         if sorted_methods:
-            lines.append("// ---------------------------------------------------------")
-            lines.append("// Methods")
-            lines.append("// ---------------------------------------------------------")
+            lines.append("// ---------------------------")
+            lines.append("// ACTION AND CONDITION NODES ")
+            lines.append("// ---------------------------")
             lines.append("")
 
         for name, info in sorted_methods:
@@ -393,9 +401,9 @@ class SimbaGenerator:
 
         # 2. Wrappers
         if self.wrappers:
-             lines.append("// ---------------------------------------------------------")
-             lines.append("// Wrappers")
-             lines.append("// ---------------------------------------------------------")
+             lines.append("// --------")
+             lines.append("// WRAPPERS")
+             lines.append("// --------")
              lines.append("")
              for w in self.wrappers:
                  w_name = w['name']
