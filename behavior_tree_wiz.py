@@ -543,7 +543,7 @@ class ConverterApp:
             user_footer = self.footer_text.get("1.0", tk.END).strip()
             
             # Boilerplate parts
-            bot_record = "type\n  TBot = record\n    Tree: TBehaviorTree;\n  end;"
+            bot_record = "type\n  TBot = record\n    MainForm: TScriptForm;\n    Tree: TBehaviorTree;\n    MainConfig: TConfigJSON;\n  end;"
             init_start = "procedure TBot.Init();\nbegin\n  Self.Tree.Setup('MyBot');"
             init_end = "  Self.Tree.PrintStructure();\n  AddOnTerminate(@Self.Tree.Free);\nend;"
 
