@@ -240,7 +240,8 @@ class GraphParser:
             
             if is_symbol:
                 curr_search_cell = main_cell
-                while curr_search_cell:
+                label_updated = False
+                while curr_search_cell and not label_updated:
                     parent_id = curr_search_cell.get('parent')
                     if not parent_id or parent_id == '1' or parent_id == '0':
                         break
@@ -254,32 +255,56 @@ class GraphParser:
                             
                             if sib_val and sib.get('id') != curr_search_cell.get('id') and 'text' in sib.get('style', ''):
                                 label = sib_val
-                                break
+                                label_updated = True
+                                break  # Break out of for loop
                     
-                    if label: break
-                    curr_search_cell = self.cells.get(parent_id)
-            
-            if label == "?": label = "Selector"
-
-            n_type = "Action"
-            if "ParallelSelector" in label or "?P" in label:
-                n_type = "ParallelSelector"
-            elif "ParallelSequence" in label or "→→" in label or ("→" in label and label.count("→") >= 2):
-                n_type = "ParallelSequence"
-            elif "WeightedSelector" in label or "??%" in label or "?%" in label:
-                n_type = "WeightedSelector"
-            elif "RandomSelector" in label or "??" in label:
-                n_type = "RandomSelector"
-            elif "Selector" in label or label == "?":
-                n_type = "Selector"
-            elif "Sequence" in label or "→" in label:
-                n_type = "Sequence"
-            elif "Root" in label:
-                n_type = "Root"
-            elif "ellipse" in style or "Is" in label.split('(')[0]:
-                n_type = "Condition"
-            
-            return (label, n_type, x, y, has_memory)
+                    if not label_updated:
+                        curr_search_cell = self.cells.get(parent_id)
+                 
+                if label == "?": label = "Selector"
+         
+                n_type = "Action"
+                if "ParallelSelector" in label or "?P" in label:
+                    n_type = "ParallelSelector"
+                elif "ParallelSequence" in label or "→→" in label or ("→" in label and label.count("→") >= 2):
+                    n_type = "ParallelSequence"
+                elif "WeightedSelector" in label or "??%" in label or "?%" in label:
+                    n_type = "WeightedSelector"
+                elif "RandomSelector" in label or "??" in label:
+                    n_type = "RandomSelector"
+                elif "Selector" in label or label == "?":
+                    n_type = "Selector"
+                elif "Sequence" in label or "→" in label:
+                    n_type = "Sequence"
+                elif "Root" in label:
+                    n_type = "Root"
+                elif "ellipse" in style or label.split.startswith("Is"):
+                    n_type = "Condition"
+                 
+                return (label, n_type, x, y, has_memory)
+            else:
+                # If not a symbol, proceed with normal processing
+                if label == "?": label = "Selector"
+         
+                n_type = "Action"
+                if "ParallelSelector" in label or "?P" in label:
+                    n_type = "ParallelSelector"
+                elif "ParallelSequence" in label or "→→" in label or ("→" in label and label.count("→") >= 2):
+                    n_type = "ParallelSequence"
+                elif "WeightedSelector" in label or "??%" in label or "?%" in label:
+                    n_type = "WeightedSelector"
+                elif "RandomSelector" in label or "??" in label:
+                    n_type = "RandomSelector"
+                elif "Selector" in label or label == "?":
+                    n_type = "Selector"
+                elif "Sequence" in label or "→" in label:
+                    n_type = "Sequence"
+                elif "Root" in label:
+                    n_type = "Root"
+                elif "ellipse" in style or "Is" in label.split('(')[0]:
+                    n_type = "Condition"
+                 
+                return (label, n_type, x, y, has_memory)
 
         connected_ids = set()
         for s, t, w in self.edges:
