@@ -21,6 +21,12 @@ class BTNode:
         self.geometry_x = geometry_x
         self.geometry_y = geometry_y
         self.has_memory = has_memory
+        # Decorator parameters
+        self.max_retries: Optional[int] = None
+        self.timer_duration: Optional[int] = None
+        self.repeat_count: Optional[int] = None
+        self.condition_reference: Optional[str] = None
+        self.decorator_raw_param: Optional[str] = None
 
     def add_child(self, child: 'BTNode', weight: float = 0.0):
         self.children.append(child)
@@ -114,9 +120,83 @@ class RootStrategy(GenerationStrategy):
         # If multiple children, treat as a Selector (common for Root to branch into options)
         if len(node.children) > 1:
             return CompositeStrategy('CreateSelector').generate(node, generator_ref, indent_level)
-
+        
         # We assume the Root Node in XML connects to the actual top-level tree node
         return generator_ref.generate_node(node.children[0], indent_level)
+
+class DecoratorStrategy(GenerationStrategy):
+    def __init__(self, method_name: str):
+        self.method_name = method_name # e.g., 'CreateForceSuccess' or 'CreateForceFailure'
+
+    def _parse_decorator_parameters(self, node: BTNode):
+        """Parse decorator parameters from node.label in format: DECOR_TYPE_Name(Params)"""
+        match = re.match(r'^[^(]*\((.*)\)$', node.label)
+        if match:
+            params_str = match.group(1)
+            if self.method_name == 'CreateRetry':
+                try:
+                    node.max_retries = int(params_str.strip())
+                except ValueError:
+                    node.decorator_raw_param = params_str.strip()
+            elif self.method_name in ['CreateCooldown', 'CreateTimeout']:
+                try:
+                    node.timer_duration = int(params_str.strip())
+                except ValueError:
+                    node.decorator_raw_param = params_str.strip()
+            elif self.method_name == 'CreateRepeater':
+                try:
+                    node.repeat_count = int(params_str.strip())
+                except ValueError:
+                    node.decorator_raw_param = params_str.strip()
+            elif self.method_name == 'CreateConditional':
+                node.condition_reference = params_str.strip()
+
+    def generate(self, node: BTNode, generator_ref: 'SimbaGenerator', indent_level: int) -> str:
+        indent = "  " * indent_level
+        paren_pos = node.label.find('(')
+        if paren_pos >= 0:
+            display_name = node.label[:paren_pos].strip().replace("'", "''")
+        else:
+            display_name = node.label.replace("'", "''")
+        
+        self._parse_decorator_parameters(node)
+        
+        if not node.children:
+            return f"{indent}// Decorator '{display_name}' has no child"
+        
+        child_code = generator_ref.generate_node(node.children[0], indent_level + 1)
+        
+        param_str = ""
+        if self.method_name == 'CreateRetry':
+            if node.max_retries is not None:
+                param_str = f", {node.max_retries}"
+            elif node.decorator_raw_param is not None:
+                param_str = f", {node.decorator_raw_param}"
+        elif self.method_name in ['CreateCooldown', 'CreateTimeout']:
+            if node.timer_duration is not None:
+                param_str = f", {node.timer_duration}"
+            elif node.decorator_raw_param is not None:
+                param_str = f", {node.decorator_raw_param}"
+        elif self.method_name == 'CreateRepeater':
+            if node.repeat_count is not None:
+                param_str = f", {node.repeat_count}"
+            elif node.decorator_raw_param is not None:
+                param_str = f", {node.decorator_raw_param}"
+        elif self.method_name == 'CreateConditional' and node.condition_reference is not None:
+            cond_ref = node.condition_reference
+            if cond_ref.startswith('@Self.'):
+                param_str = f", {cond_ref}"
+            elif cond_ref.startswith('@'):
+                param_str = f", {cond_ref}"
+            else:
+                param_str = f", @{cond_ref}"
+
+        closing_args = ""
+        if node.has_memory and self.method_name in ['CreateForceSuccess', 'CreateForceFailure']:
+            closing_args = ", True"
+            
+        simba_code = f"{indent}Self.Tree.{self.method_name}('{display_name}', \n{child_code}{param_str}{closing_args}\n{indent})"
+        return simba_code
 
 class WeightedSelectorStrategy(GenerationStrategy):
     def generate(self, node: BTNode, generator_ref: 'SimbaGenerator', indent_level: int) -> str:
@@ -145,7 +225,16 @@ class NodeFactory:
         'ParallelSequence': CompositeStrategy('CreateParallelSequence'),
         'Action': LeafStrategy('CreateAction'),
         'Condition': LeafStrategy('CreateCondition'),
-        'Root': RootStrategy()
+        'Root': RootStrategy(),
+        # Decorator strategies
+        'ForceSuccess': DecoratorStrategy('CreateForceSuccess'),
+        'ForceFailure': DecoratorStrategy('CreateForceFailure'),
+        'Retry': DecoratorStrategy('CreateRetry'),
+        'Cooldown': DecoratorStrategy('CreateCooldown'),
+        'Timeout': DecoratorStrategy('CreateTimeout'),
+        'Repeater': DecoratorStrategy('CreateRepeater'),
+        'Conditional': DecoratorStrategy('CreateConditional'),
+        'Link': DecoratorStrategy('CreateLink')
     }
 
     @classmethod
@@ -221,90 +310,101 @@ class GraphParser:
                 else:
                     break
 
-            label = main_cell.get('value', '')
+            raw_value = main_cell.get('value', '')
             style = main_cell.get('style', '')
 
             has_memory = "rounded=1" in style
 
-            if label and "<" in label:
-                label = re.sub(r'<[^>]+>', '', label)
-            
-            # Check if label is likely just a symbol/placeholder, in which case we look for a text sibling
-            is_symbol = (
-                not label or 
-                label.strip() == "" or 
-                label in ["?", "??", "?P", "?%", "??%"] or 
-                "→" in label or 
-                style.startswith("ellipse")
-            )
-            
-            if is_symbol:
+            symbol = raw_value
+            if symbol and "<" in symbol:
+                symbol = re.sub(r'<[^>]+>', '', symbol)
+            symbol = symbol.strip()
+
+            parent_id = main_cell.get('parent')
+            is_in_group = parent_id is not None and parent_id not in ('0', '1')
+
+            label = symbol
+            if is_in_group:
                 curr_search_cell = main_cell
-                label_updated = False
-                while curr_search_cell and not label_updated:
-                    parent_id = curr_search_cell.get('parent')
-                    if not parent_id or parent_id == '1' or parent_id == '0':
+                label_found = False
+                while curr_search_cell and not label_found:
+                    search_parent = curr_search_cell.get('parent')
+                    if not search_parent or search_parent in ('1', '0'):
                         break
-                    
-                    if parent_id in self.groups:
-                        siblings = self.groups[parent_id]
-                        for sib in siblings:
+
+                    if search_parent in self.groups:
+                        for sib in self.groups[search_parent]:
                             sib_val = sib.get('value', '')
-                            if sib_val:
-                                if "<" in sib_val: sib_val = re.sub(r'<[^>]+>', '', sib_val)
-                            
-                            if sib_val and sib.get('id') != curr_search_cell.get('id') and 'text' in sib.get('style', ''):
+                            if sib_val and "<" in sib_val:
+                                sib_val = re.sub(r'<[^>]+>', '', sib_val)
+                            if (sib_val and
+                                sib.get('id') != curr_search_cell.get('id') and
+                                'text' in sib.get('style', '')):
                                 label = sib_val
-                                label_updated = True
-                                break  # Break out of for loop
-                    
-                    if not label_updated:
-                        curr_search_cell = self.cells.get(parent_id)
-                 
-                if label == "?": label = "Selector"
-         
-                n_type = "Action"
-                if "ParallelSelector" in label or "?P" in label:
-                    n_type = "ParallelSelector"
-                elif "ParallelSequence" in label or "→→" in label or ("→" in label and label.count("→") >= 2):
-                    n_type = "ParallelSequence"
-                elif "WeightedSelector" in label or "??%" in label or "?%" in label:
-                    n_type = "WeightedSelector"
-                elif "RandomSelector" in label or "??" in label:
-                    n_type = "RandomSelector"
-                elif "Selector" in label or label == "?":
-                    n_type = "Selector"
-                elif "Sequence" in label or "→" in label:
-                    n_type = "Sequence"
-                elif "Root" in label:
-                    n_type = "Root"
-                elif "ellipse" in style or label.split.startswith("Is"):
+                                label_found = True
+                                break
+
+                    if not label_found:
+                        curr_search_cell = self.cells.get(search_parent)
+
+            has_arrow_child = False
+            direct_parent = main_cell.get('parent')
+            if direct_parent and direct_parent in self.groups:
+                for child_cell in self.groups[direct_parent]:
+                    if child_cell.get('edge') == '1':
+                        has_arrow_child = True
+                        break
+
+            n_type = "Action"
+
+            if not is_in_group:
+                if "ellipse" in style:
                     n_type = "Condition"
-                 
-                return (label, n_type, x, y, has_memory)
+                elif label.split('(')[0].strip().startswith("Is"):
+                    n_type = "Condition"
+            elif "rhombus" in style:
+                if "δS" in symbol:
+                    n_type = "ForceSuccess"
+                elif "δF" in symbol:
+                    n_type = "ForceFailure"
+                elif "δRt" in symbol:
+                    n_type = "Retry"
+                elif "δCd" in symbol:
+                    n_type = "Cooldown"
+                elif "δT" in symbol:
+                    n_type = "Timeout"
+                elif "δRp" in symbol:
+                    n_type = "Repeater"
+                elif "δIf" in symbol:
+                    n_type = "Conditional"
+                elif "δL" in symbol:
+                    n_type = "Link"
             else:
-                # If not a symbol, proceed with normal processing
-                if label == "?": label = "Selector"
-         
-                n_type = "Action"
-                if "ParallelSelector" in label or "?P" in label:
-                    n_type = "ParallelSelector"
-                elif "ParallelSequence" in label or "→→" in label or ("→" in label and label.count("→") >= 2):
-                    n_type = "ParallelSequence"
-                elif "WeightedSelector" in label or "??%" in label or "?%" in label:
+                if "??%" in symbol:
                     n_type = "WeightedSelector"
-                elif "RandomSelector" in label or "??" in label:
+                elif "?%" in symbol:
+                    n_type = "WeightedSelector"
+                elif "??" in symbol:
                     n_type = "RandomSelector"
-                elif "Selector" in label or label == "?":
-                    n_type = "Selector"
-                elif "Sequence" in label or "→" in label:
+                elif "?P" in symbol:
+                    n_type = "ParallelSelector"
+                elif symbol in ("?", "? "):
+                    if "Root" in label or label == "RootNode":
+                        n_type = "Root"
+                    else:
+                        n_type = "Selector"
+                elif "→→" in symbol or symbol.count("→") >= 2:
+                    n_type = "ParallelSequence"
+                elif "→" in symbol:
                     n_type = "Sequence"
-                elif "Root" in label:
-                    n_type = "Root"
-                elif "ellipse" in style or "Is" in label.split('(')[0]:
-                    n_type = "Condition"
-                 
-                return (label, n_type, x, y, has_memory)
+                elif symbol == "":
+                    if has_arrow_child:
+                        n_type = "Sequence"
+
+            if label == "RootNode":
+                n_type = "Root"
+
+            return (label, n_type, x, y, has_memory)
 
         connected_ids = set()
         for s, t, w in self.edges:
