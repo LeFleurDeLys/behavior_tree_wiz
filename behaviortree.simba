@@ -1,0 +1,4229 @@
+(*
+BehaviorTree v1.0.0 - Amalgamated Distribution
+Build: 2026-01-19 15:11:46 UTC
+https://github.com/WaspScripts/behaviortree
+Credits: TazE
+*)
+
+{$DEFINE WL_BEHAVIORTREE_INCLUDED}
+{$DEFINE WL_BEHAVIORTREE_TYPES_INCLUDED}
+{$DEFINE WL_BEHAVIORTREE_TREE_INCLUDED}
+{$DEFINE WL_BEHAVIORTREE_ACTIONS_INCLUDED}
+{$DEFINE WL_BEHAVIORTREE_COMPOSITES_INCLUDED}
+{$DEFINE WL_BEHAVIORTREE_DECORATORS_INCLUDED}
+{$DEFINE WL_BEHAVIORTREE_REACTIVE_INCLUDED}
+{$DEFINE WL_BEHAVIORTREE_UTILITIES_INCLUDED}
+{$DEFINE WL_BEHAVIORTREE_FEATURES_INCLUDED}
+{$DEFINE WL_BLACKBOARD_INCLUDED}
+
+{$IFNDEF WL_THREADING_INCLUDED}
+  {$INCLUDE_ONCE WaspLib/utils/threading.simba}
+{$ENDIF}
+
+{$SCOPEDENUMS ON}
+
+
+(* BLACKBOARD *)
+
+(*
+## Blackboard
+Shared data storage for behavior trees.
+
+Thread-safe key-value store that all nodes can read from and write to.
+Supports any data type and provides comparison operations for conditions.
+*)
+
+
+type
+  (*
+  ### EBBOperator
+  Comparison operators for blackboard conditions.
+  
+  ```pascal
+  HealthCheck := Tree.CreateBlackboardCondition('Health Check', 'Health', EBBOperator.GreaterThan, 50);
+  ```
+  *)
+  EBBOperator = (Equal, NotEqual, GreaterThan, LessThan, GreaterThanOrEqual, LessThanOrEqual);
+  
+  EBBChangeType = (Create, Update, Delete, Read);
+
+  TBlackboardChange = record
+    Key: String;
+    OldValue: Variant;
+    NewValue: Variant;
+    ChangeType: EBBChangeType;
+    Timestamp: Double;
+  end;
+
+  TStringIntern = record
+    StringToID: TStringMap<Integer>;
+    IDToString: TStringArray;
+    NextID: Integer;
+    TotalOps: Integer;
+    CacheHits: Integer;
+    HashCache: array of record
+      Hash: UInt32;
+      ID: Integer;
+      Valid: Boolean;
+    end;
+  end;
+
+  TBlackboard = record
+    Values: array of Variant;
+    ValidSlots: array of Boolean;
+    StringIntern: TStringIntern;
+    EnableTracing: Boolean;
+    WatchedKeys: TStringArray;
+    Lock: TLock;
+    ActivityStream: array of TBlackboardChange;
+    MaxActivitySize: Integer;
+    ActivityEnabled: Boolean;
+  end;
+
+// Optimized key lookup using string interning and hash caching
+function TBlackboard._InternKey(Key: String): Integer;
+var
+  Hash: UInt32;
+  i: Integer;
+begin
+  Inc(Self.StringIntern.TotalOps);
+  Hash := Key.Hash();
+  
+  for i := 0 to High(Self.StringIntern.HashCache) do
+  begin
+    if Self.StringIntern.HashCache[i].Valid and 
+       (Self.StringIntern.HashCache[i].Hash = Hash) then
+    begin
+      Inc(Self.StringIntern.CacheHits);
+      Result := Self.StringIntern.HashCache[i].ID;
+      Exit;
+    end;
+  end;
+  
+  // Cache miss - check string map
+  if Self.StringIntern.StringToID.Exists(Key) then
+  begin
+    Result := Self.StringIntern.StringToID.Value[Key];
+    Self._AddToHashCache(Hash, Result);
+  end
+  else
+  begin
+    // New string - assign next available ID
+    Result := Self.StringIntern.NextID;
+    Inc(Self.StringIntern.NextID);
+    Self.StringIntern.StringToID.Value[Key] := Result;
+    SetLength(Self.StringIntern.IDToString, Length(Self.StringIntern.IDToString) + 1);
+    Self.StringIntern.IDToString[High(Self.StringIntern.IDToString)] := Key;
+    Self._AddToHashCache(Hash, Result);
+  end;
+end;
+
+// Adds entries to the hash cache for performance optimization
+procedure TBlackboard._AddToHashCache(Hash: UInt32; ID: Integer);
+var
+  i: Integer;
+begin
+  // Look for empty slot first
+  for i := 0 to High(Self.StringIntern.HashCache) do
+  begin
+    if not Self.StringIntern.HashCache[i].Valid then
+    begin
+      Self.StringIntern.HashCache[i].Hash := Hash;
+      Self.StringIntern.HashCache[i].ID := ID;
+      Self.StringIntern.HashCache[i].Valid := True;
+      Exit;
+    end;
+  end;
+  
+  // No empty slot - expand cache
+  SetLength(Self.StringIntern.HashCache, Length(Self.StringIntern.HashCache) + 1);
+  i := High(Self.StringIntern.HashCache);
+  Self.StringIntern.HashCache[i].Hash := Hash;
+  Self.StringIntern.HashCache[i].ID := ID;
+  Self.StringIntern.HashCache[i].Valid := True;
+end;
+
+(*
+### TBlackboard.Setup
+```pascal
+procedure TBlackboard.Setup();
+```
+Initializes the blackboard. Must be called before use.
+
+Example:
+```pascal
+Blackboard.Setup();
+```
+*)
+procedure TBlackboard.Setup();
+begin
+  Self.Lock := TLock.Create();
+  Self.MaxActivitySize := 1000;
+  Self.ActivityEnabled := True;
+  Self.StringIntern.NextID := 0;
+  SetLength(Self.StringIntern.IDToString, 0);
+  SetLength(Self.StringIntern.HashCache, 0);
+  SetLength(Self.Values, 0);
+  SetLength(Self.ValidSlots, 0);
+  Self.StringIntern.TotalOps := 0;
+  Self.StringIntern.CacheHits := 0;
+end;
+
+(*
+### TBlackboard.Free
+```pascal
+procedure TBlackboard.Free();
+```
+Cleans up blackboard resources.
+
+Example:
+```pascal
+Blackboard.Free();
+```
+*)
+procedure TBlackboard.Free();
+begin
+  if Assigned(@Self.Lock) then
+    Self.Lock.Free();
+end;
+
+(*
+### TBlackboard.Get
+```pascal
+function TBlackboard.Get(Key: String; Default: Variant = nil): Variant;
+```
+Gets a value from the blackboard.
+
+Example:
+```pascal
+Health := Blackboard.Get('Health', 100); // Default to 100 if not found
+```
+*)
+function TBlackboard.Get(Key: String; Default: Variant = nil): Variant;
+var
+  KeyID: Integer;
+  Change: TBlackboardChange;
+begin
+  Self.Lock.Enter();
+  try
+    KeyID := Self._InternKey(Key);
+    
+    if (KeyID < Length(Self.Values)) and Self.ValidSlots[KeyID] then
+    begin
+      Result := Self.Values[KeyID];
+      
+      if Self.ActivityEnabled then
+      begin
+        Change.Key := Key;
+        Change.OldValue := nil;
+        Change.NewValue := Result;
+        Change.ChangeType := EBBChangeType.Read;
+        Change.Timestamp := PerformanceTime();
+        Self._AddToActivityStream(Change);
+      end;
+    end
+    else
+      Result := Default;
+  finally
+    Self.Lock.Leave();
+  end;
+end;
+
+(*
+### TBlackboard.Put
+```pascal
+procedure TBlackboard.Put(Key: String; Value: Variant);
+```
+Stores a value in the blackboard.
+
+Example:
+```pascal
+Blackboard.Put('Health', 85);
+Blackboard.Put('Position', TPoint.Create(100, 200));
+```
+*)
+procedure TBlackboard.Put(Key: String; Value: Variant);
+var
+  KeyID: Integer;
+  OldValue: Variant;
+  IsNew: Boolean;
+  Change: TBlackboardChange;
+begin
+  Self.Lock.Enter();
+  try
+    KeyID := Self._InternKey(Key);
+    
+    if KeyID >= Length(Self.Values) then
+    begin
+      SetLength(Self.Values, KeyID + 1);
+      SetLength(Self.ValidSlots, KeyID + 1);
+    end;
+    
+    IsNew := not Self.ValidSlots[KeyID];
+    if not IsNew then
+      OldValue := Self.Values[KeyID];
+
+    // Only update if new or value actually changed
+    if (not IsNew) and (OldValue = Value) then
+      Exit;
+
+    Self.Values[KeyID] := Value;
+    Self.ValidSlots[KeyID] := True;
+
+    if Self.ActivityEnabled then
+    begin
+      Change.Key := Key;
+      Change.OldValue := OldValue;
+      Change.NewValue := Value;
+      if IsNew then
+        Change.ChangeType := EBBChangeType.Create
+      else
+        Change.ChangeType := EBBChangeType.Update;
+      Change.Timestamp := PerformanceTime();
+      Self._AddToActivityStream(Change);
+    end;
+
+    if Self.EnableTracing then
+    begin
+      if IsNew then
+        WriteLn(Format('[BLACKBOARD] Created "%s" = %s', [Key, ToStr(Value)]))
+      else
+        WriteLn(Format('[BLACKBOARD] Updated "%s" = %s', [Key, ToStr(Value)]));
+    end;
+
+    if Self._IsKeyWatched(Key) then
+    begin
+      if IsNew then
+        WriteLn(Format('[BLACKBOARD WATCH] Key "%s" created: %s', [Key, ToStr(Value)]))
+      else
+        WriteLn(Format('[BLACKBOARD WATCH] Key "%s" changed: %s -> %s', [Key, ToStr(OldValue), ToStr(Value)]));
+    end;
+  finally
+    Self.Lock.Leave();
+  end;
+end;
+
+(*
+### TBlackboard.HasKey
+```pascal
+function TBlackboard.HasKey(Key: String): Boolean;
+```
+Checks if a key exists.
+
+Example:
+```pascal
+if Blackboard.HasKey('Health') then
+  WriteLn('Health is tracked');
+```
+*)
+function TBlackboard.HasKey(Key: String): Boolean;
+var
+  KeyID: Integer;
+begin
+  Self.Lock.Enter();
+  try
+    KeyID := Self._InternKey(Key);
+    Result := (KeyID < Length(Self.Values)) and Self.ValidSlots[KeyID];
+  finally
+    Self.Lock.Leave();
+  end;
+end;
+
+(*
+### TBlackboard.RemoveKey
+```pascal
+function TBlackboard.RemoveKey(Key: String): Boolean;
+```
+Removes a key and its value.
+
+Example:
+```pascal
+Blackboard.RemoveKey('TempData');
+```
+*)
+function TBlackboard.RemoveKey(Key: String): Boolean;
+var
+  KeyID: Integer;
+  OldValue: Variant;
+  Change: TBlackboardChange;
+begin
+  Self.Lock.Enter();
+  try
+    KeyID := Self._InternKey(Key);
+    Result := (KeyID < Length(Self.Values)) and Self.ValidSlots[KeyID];
+    if Result then
+    begin
+      OldValue := Self.Values[KeyID];
+      Self.ValidSlots[KeyID] := False;
+      
+      if Self.ActivityEnabled then
+      begin
+        Change.Key := Key;
+        Change.OldValue := OldValue;
+        Change.NewValue := nil;
+        Change.ChangeType := EBBChangeType.Delete;
+        Change.Timestamp := PerformanceTime();
+        Self._AddToActivityStream(Change);
+      end;
+      
+      if Self.EnableTracing then
+        WriteLn(Format('[BLACKBOARD] Deleted "%s" (was: %s)', [Key, ToStr(OldValue)]));
+    end;
+  finally
+    Self.Lock.Leave();
+  end;
+end;
+
+(*
+### TBlackboard.GetKeys
+```pascal
+function TBlackboard.GetKeys(): TStringArray;
+```
+Gets all keys currently stored.
+
+Example:
+```pascal
+Keys := Blackboard.GetKeys();
+```
+*)
+function TBlackboard.GetKeys(): TStringArray;
+var
+  i, Count: Integer;
+begin
+  Self.Lock.Enter();
+  try
+    SetLength(Result, 0);
+    for i := 0 to High(Self.ValidSlots) do
+      if Self.ValidSlots[i] then
+      begin
+        Count := Length(Result);
+        SetLength(Result, Count + 1);
+        Result[Count] := Self.StringIntern.IDToString[i];
+      end;
+  finally
+    Self.Lock.Leave();
+  end;
+end;
+
+(*
+### TBlackboard.Count
+```pascal
+function TBlackboard.Count(): Integer;
+```
+Returns the number of keys stored.
+
+Example:
+```pascal
+WriteLn(Format('Blackboard has %d entries', [Blackboard.Count()]));
+```
+*)
+function TBlackboard.Count(): Integer;
+var
+  i: Integer;
+begin
+  Result := 0;
+  for i := 0 to High(Self.ValidSlots) do
+    if Self.ValidSlots[i] then
+      Inc(Result);
+end;
+
+(*
+### TBlackboard.Clear
+```pascal
+procedure TBlackboard.Clear();
+```
+Removes all keys and values.
+
+Example:
+```pascal
+Blackboard.Clear();
+```
+*)
+procedure TBlackboard.Clear();
+begin
+  Self.Lock.Enter();
+  try
+    SetLength(Self.Values, 0);
+    SetLength(Self.ValidSlots, 0);
+  finally
+    Self.Lock.Leave();
+  end;
+end;
+
+(*
+### TBlackboard.Compare
+```pascal
+function TBlackboard.Compare(Key: String; Op: EBBOperator; CompareWith: Variant): Boolean;
+```
+Compares a blackboard value with another value.
+
+Example:
+```pascal
+if Blackboard.Compare('Health', EBBOperator.GreaterThan, 50) then
+  WriteLn('Health is good');
+```
+*)
+function TBlackboard.Compare(Key: String; Op: EBBOperator; CompareWith: Variant): Boolean;
+var
+  KeyID: Integer;
+  Value: Variant;
+begin
+  Result := False;
+  Self.Lock.Enter();
+  try
+    KeyID := Self._InternKey(Key);
+    if (KeyID >= Length(Self.Values)) or not Self.ValidSlots[KeyID] then Exit;
+    Value := Self.Values[KeyID];
+    case Op of
+      EBBOperator.Equal: Result := (Value = CompareWith);
+      EBBOperator.NotEqual: Result := (Value <> CompareWith);
+      EBBOperator.GreaterThan: Result := (Value > CompareWith);
+      EBBOperator.LessThan: Result := (Value < CompareWith);
+      EBBOperator.GreaterThanOrEqual: Result := (Value >= CompareWith);
+      EBBOperator.LessThanOrEqual: Result := (Value <= CompareWith);
+    end;
+  except
+    Result := False;
+  finally
+    Self.Lock.Leave();
+  end;
+end;
+
+// Checks if a key is being watched for changes
+function TBlackboard._IsKeyWatched(Key: String): Boolean;
+var
+  i: Integer;
+begin
+  for i := 0 to High(Self.WatchedKeys) do
+    if Self.WatchedKeys[i] = Key then
+      Exit(True);
+  Result := False;
+end;
+
+(*
+### TBlackboard.Watch
+```pascal
+procedure TBlackboard.Watch(Key: String);
+```
+Adds a key to the watch list for debugging.
+
+Example:
+```pascal
+Blackboard.Watch('Health');
+```
+*)
+procedure TBlackboard.Watch(Key: String);
+begin
+  if not Self._IsKeyWatched(Key) then
+  begin
+    SetLength(Self.WatchedKeys, Length(Self.WatchedKeys) + 1);
+    Self.WatchedKeys[High(Self.WatchedKeys)] := Key;
+  end;
+end;
+
+(*
+### TBlackboard.Unwatch
+```pascal
+procedure TBlackboard.Unwatch(Key: String);
+```
+Removes a key from the watch list.
+
+Example:
+```pascal
+Blackboard.Unwatch('Health');
+```
+*)
+procedure TBlackboard.Unwatch(Key: String);
+var
+  i, j: Integer;
+begin
+  for i := 0 to High(Self.WatchedKeys) do
+    if Self.WatchedKeys[i] = Key then
+    begin
+      for j := i to High(Self.WatchedKeys) - 1 do
+        Self.WatchedKeys[j] := Self.WatchedKeys[j + 1];
+      SetLength(Self.WatchedKeys, Length(Self.WatchedKeys) - 1);
+      Break;
+    end;
+end;
+
+(*
+### TBlackboard.PrintEntries
+```pascal
+procedure TBlackboard.PrintEntries();
+```
+Prints all entries to console for debugging.
+
+Example:
+```pascal
+Blackboard.PrintEntries();
+```
+*)
+procedure TBlackboard.PrintEntries();
+var
+  Keys: TStringArray;
+  i: Integer;
+begin
+  WriteLn('--- Blackboard Entries ---');
+  Self.Lock.Enter();
+  try
+    Keys := Self.GetKeys();
+    if Length(Keys) = 0 then
+      WriteLn('(Empty)')
+    else
+      for i := 0 to High(Keys) do
+        if Keys[i] <> '' then
+          WriteLn(Format('%s = %s', [Keys[i], ToStr(Self.Get(Keys[i]))]));
+  finally
+    Self.Lock.Leave();
+  end;
+  WriteLn(''.PadLeft(25, '-'));
+end;
+
+(*
+### TBlackboard.GetKeyID
+```pascal
+function TBlackboard.GetKeyID(Key: String): Integer;
+```
+Gets the internal ID for a key for optimized access.
+
+Example:
+```pascal
+KeyID := Blackboard.GetKeyID('Health');
+```
+*)
+function TBlackboard.GetKeyID(Key: String): Integer;
+begin
+  Self.Lock.Enter();
+  try
+    Result := Self._InternKey(Key);
+  finally
+    Self.Lock.Leave();
+  end;
+end;
+
+(*
+### TBlackboard.GetByID
+```pascal
+function TBlackboard.GetByID(KeyID: Integer; Default: Variant = nil): Variant;
+```
+Gets a value using the internal key ID for optimized access.
+
+Example:
+```pascal
+KeyID := Blackboard.GetKeyID('Health');
+Health := Blackboard.GetByID(KeyID, 100); // Default to 100 if not found
+```
+*)
+function TBlackboard.GetByID(KeyID: Integer; Default: Variant = nil): Variant;
+begin
+  Self.Lock.Enter();
+  try
+    if (KeyID < Length(Self.Values)) and Self.ValidSlots[KeyID] then
+      Result := Self.Values[KeyID]
+    else
+      Result := Default;
+  finally
+    Self.Lock.Leave();
+  end;
+end;
+
+(*
+### TBlackboard.PutByID
+```pascal
+procedure TBlackboard.PutByID(KeyID: Integer; Value: Variant);
+```
+Sets a value using the internal key ID for optimized access.
+
+Example:
+```pascal
+KeyID := Blackboard.GetKeyID('Health');
+Blackboard.PutByID(KeyID, 85);
+```
+*)
+procedure TBlackboard.PutByID(KeyID: Integer; Value: Variant);
+begin
+  Self.Lock.Enter();
+  try
+    if KeyID >= Length(Self.Values) then
+    begin
+      SetLength(Self.Values, KeyID + 1);
+      SetLength(Self.ValidSlots, KeyID + 1);
+    end;
+    
+    Self.Values[KeyID] := Value;
+    Self.ValidSlots[KeyID] := True;
+  finally
+    Self.Lock.Leave();
+  end;
+end;
+
+(*
+### TBlackboard.PrintMetrics
+```pascal
+procedure TBlackboard.PrintMetrics();
+```
+Prints performance metrics for the blackboard.
+
+Example:
+```pascal
+Blackboard.PrintMetrics();
+```
+*)
+procedure TBlackboard.PrintMetrics();
+var
+  HitRate: Single;
+begin
+  Self.Lock.Enter();
+  try
+    if Self.StringIntern.TotalOps > 0 then
+      HitRate := (Self.StringIntern.CacheHits / Self.StringIntern.TotalOps) * 100.0
+    else
+      HitRate := 0.0;
+      
+    WriteLn('--- Performance Metrics ---');
+    WriteLn(Format('Cache Hit Rate: %.1f%%', [HitRate]));
+    WriteLn(Format('Total Operations: %d', [Self.StringIntern.TotalOps]));
+    WriteLn(Format('Cache Hits: %d', [Self.StringIntern.CacheHits]));
+    WriteLn(Format('Cache Size: %d', [Length(Self.StringIntern.HashCache)]));
+    WriteLn(Format('Unique Keys: %d', [Length(Self.StringIntern.IDToString)]));
+    WriteLn(Format('Valid Entries: %d', [Self.Count()]));
+    WriteLn(''.PadLeft(30, '-'));
+  finally
+    Self.Lock.Leave();
+  end;
+end;
+
+// Adds change entries to activity stream for debugging
+procedure TBlackboard._AddToActivityStream(Change: TBlackboardChange);
+begin
+  if Length(Self.ActivityStream) >= Self.MaxActivitySize then
+  begin
+    Move(Self.ActivityStream[1], Self.ActivityStream[0], 
+         (Length(Self.ActivityStream) - 1) * SizeOf(TBlackboardChange));
+    Self.ActivityStream[High(Self.ActivityStream)] := Change;
+  end
+  else
+  begin
+    SetLength(Self.ActivityStream, Length(Self.ActivityStream) + 1);
+    Self.ActivityStream[High(Self.ActivityStream)] := Change;
+  end;
+end;
+
+(*
+### TBlackboard.GetActivitySince
+```pascal
+function TBlackboard.GetActivitySince(Timestamp: Double): array of TBlackboardChange;
+```
+Gets all activity changes since a specific timestamp.
+
+Example:
+```pascal
+StartTime := PerformanceTime();
+// ... do something ...
+Changes := Blackboard.GetActivitySince(StartTime);
+```
+*)
+function TBlackboard.GetActivitySince(Timestamp: Double): array of TBlackboardChange;
+var
+  i, Count: Integer;
+begin
+  SetLength(Result, 0);
+  Count := 0;
+  
+  Self.Lock.Enter();
+  try
+    for i := 0 to High(Self.ActivityStream) do
+      if Self.ActivityStream[i].Timestamp > Timestamp then
+        Inc(Count);
+    
+    if Count > 0 then
+    begin
+      SetLength(Result, Count);
+      Count := 0;
+      for i := 0 to High(Self.ActivityStream) do
+        if Self.ActivityStream[i].Timestamp > Timestamp then
+        begin
+          Result[Count] := Self.ActivityStream[i];
+          Inc(Count);
+        end;
+    end;
+  finally
+    Self.Lock.Leave();
+  end;
+end;
+
+(*
+### TBlackboard.GetRecentActivity
+```pascal
+function TBlackboard.GetRecentActivity(MaxCount: Integer = 50): array of TBlackboardChange;
+```
+Gets the most recent activity changes.
+
+Example:
+```pascal
+RecentChanges := Blackboard.GetRecentActivity(20); // Get last 20 changes
+```
+*)
+function TBlackboard.GetRecentActivity(MaxCount: Integer = 50): array of TBlackboardChange;
+var
+  i, StartIndex: Integer;
+begin
+  Self.Lock.Enter();
+  try
+    if Length(Self.ActivityStream) = 0 then
+    begin
+      SetLength(Result, 0);
+      Exit;
+    end;
+    
+    StartIndex := Max(0, Length(Self.ActivityStream) - MaxCount);
+    SetLength(Result, Length(Self.ActivityStream) - StartIndex);
+    
+    for i := StartIndex to High(Self.ActivityStream) do
+      Result[i - StartIndex] := Self.ActivityStream[i];
+  finally
+    Self.Lock.Leave();
+  end;
+end;
+
+(*
+### TBlackboard.ClearActivity
+```pascal
+procedure TBlackboard.ClearActivity();
+```
+Clears the activity history.
+
+Example:
+```pascal
+Blackboard.ClearActivity();
+```
+*)
+procedure TBlackboard.ClearActivity();
+begin
+  Self.Lock.Enter();
+  try
+    SetLength(Self.ActivityStream, 0);
+  finally
+    Self.Lock.Leave();
+  end;
+end;
+
+(*
+### TBlackboard.PrintActivity
+```pascal
+procedure TBlackboard.PrintActivity(MaxCount: Integer = 20);
+```
+Prints recent activity for debugging.
+
+Example:
+```pascal
+Blackboard.PrintActivity(10); // Print last 10 activities
+```
+*)
+procedure TBlackboard.PrintActivity(MaxCount: Integer = 20);
+var
+  Activity: array of TBlackboardChange;
+  i: Integer;
+  TypeStr: String;
+begin
+  Activity := Self.GetRecentActivity(MaxCount);
+  
+  WriteLn('--- Activity Stream ---');
+  if Length(Activity) = 0 then
+    WriteLn('(No activity)')
+  else
+    for i := 0 to High(Activity) do
+    begin
+      case Activity[i].ChangeType of
+        EBBChangeType.Create: TypeStr := 'CREATE';
+        EBBChangeType.Update: TypeStr := 'UPDATE';
+        EBBChangeType.Delete: TypeStr := 'DELETE';
+        EBBChangeType.Read: TypeStr := 'READ';
+      end;
+      
+      if Activity[i].ChangeType = EBBChangeType.Update then
+        WriteLn(Format('[%.6f] %s %s: %s -> %s', [
+          Activity[i].Timestamp, TypeStr, Activity[i].Key,
+          ToStr(Activity[i].OldValue), ToStr(Activity[i].NewValue)]))
+      else
+        WriteLn(Format('[%.6f] %s %s: %s', [
+          Activity[i].Timestamp, TypeStr, Activity[i].Key, ToStr(Activity[i].NewValue)]));
+    end;
+  WriteLn(''.PadLeft(25, '-'));
+end;
+
+// Validates blackboard key existence for error reporting
+function TBlackboard._CheckKey(Key: String): String;
+begin
+  if not Self.HasKey(Key) then
+    Result := Format('Key "%s" not found', [Key])
+  else
+    Result := '';
+end;
+
+(* TYPES *)
+
+(*
+## Types
+Core types for behavior trees.
+*)
+
+
+const
+  BT_MAX_RECURSION_DEPTH = 256;
+
+type
+  (*
+  ### EBTStatus
+  Execution status returned by nodes.
+  
+  ```pascal
+  function MyAction(): EBTStatus;
+  begin
+    if TaskCompleted then
+      Result := EBTStatus.Success
+    else if TaskFailed then
+      Result := EBTStatus.Failure
+    else
+      Result := EBTStatus.Running;
+  end;
+  ```
+  *)
+  EBTStatus = (Failure, Success, Running);
+
+  (*
+  ### EBTDebugLevel
+  Debug output verbosity levels.
+  
+  ```pascal
+  MyTree.SetDebugLevel(EBTDebugLevel.Verbose); // Detailed logging
+  MyTree.SetDebugLevel(EBTDebugLevel.Silent);  // No logging
+  ```
+  *)
+  EBTDebugLevel = (Silent, Errors, Normal, Verbose);
+
+  (*
+  ### EBTErrorType
+  Types of errors that can occur.
+  
+  ```pascal
+  if MyTree.HasErrors() then
+  begin
+    Error := MyTree.GetLastError();
+    case Error.ErrorType of
+      EBTErrorType.BlackboardError: WriteLn('Blackboard issue');
+      EBTErrorType.InvalidNode: WriteLn('Node configuration issue');
+    end;
+  end;
+  ```
+  *)
+  EBTErrorType = (None, InvalidNode, NullReference, MaxDepthExceeded, InvalidSubtree, BlackboardError);
+
+  (*
+  ### TBTAction
+  Function type for action nodes.
+  
+  ```pascal
+  function MyAction(): EBTStatus;
+  begin
+    // Your action logic here
+    Result := EBTStatus.Success;
+  end;
+  
+  ActionNode := MyTree.CreateAction('My Action', @MyAction);
+  ```
+  *)
+  TBTAction = function(): EBTStatus;
+
+  (*
+  ### TBTActionMethod
+  Method type for action nodes.
+  
+  ```pascal
+  function TMyAI.MyAction(): EBTStatus;
+  begin
+    // Access object properties
+    Result := EBTStatus.Success;
+  end;
+  
+  ActionNode := MyTree.CreateAction('My Action', @Self.MyAction);
+  ```
+  *)
+  TBTActionMethod = function(): EBTStatus of object;
+
+  (*
+  ### TBTCondition
+  Function type for condition nodes.
+  
+  ```pascal
+  function IsEnemyNearby(): Boolean;
+  begin
+    Result := CalculateEnemyDistance() < 100;
+  end;
+  
+  ConditionNode := MyTree.CreateCondition('Enemy Nearby', @IsEnemyNearby);
+  ```
+  *)
+  TBTCondition = function(): Boolean;
+
+  (*
+  ### TBTConditionMethod
+  Method type for condition nodes.
+  
+  ```pascal
+  function TMyAI.IsHealthLow(): Boolean;
+  begin
+    Result := Self.PlayerHealth < 25;
+  end;
+  
+  ConditionNode := MyTree.CreateCondition('Health Low', @Self.IsHealthLow);
+  ```
+  *)
+  TBTConditionMethod = function(): Boolean of object;
+
+  // Node types enum
+  EBTNodeType = (
+    Action, Selector, Sequence, Inverter, Cooldown, Retry,
+    ForceSuccess, ForceFailure, BlackboardCondition, Subtree,
+    ParallelSequence, ParallelSelector, Conditional, RandomSelector,
+    WeightedSelector, Timeout, Repeater, Condition, BlackboardSelector,
+    Link, WaitForEvent, BroadcastEvent, EventCondition,
+    ReactiveSelector, ReactiveSequence, DataGatherer,
+    RepeatUntilSuccess, RepeatUntilFailure, Delay, Success, Failure, Running, Probability
+  );
+
+  // Forward declarations
+  PBehaviorTree = ^TBehaviorTree;
+
+  // Node handle
+  TBTNodeHandle = record
+    Index: Integer;
+    NodeType: EBTNodeType;
+  end;
+
+  TBTNodeHandleArray = array of TBTNodeHandle;
+  PBTNodeHandleArray = ^TBTNodeHandleArray;
+
+  // Base node structure
+  TBTNodeBase = record
+    Name: String;
+  end;
+
+  // Node execution state
+  TBTNodeState = record
+    ExecutionCount: Integer;
+    RunningChildIndex: Integer;
+    RetryCount: Integer;
+    RepeatCount: Integer;
+  end;
+
+  // Specific node types
+  TBTActionNode = record
+    Base: TBTNodeBase;
+    State: TBTNodeState;
+    Action: TBTAction;
+    ActionMethod: TBTActionMethod;
+  end;
+
+  TBTCompositeNode = record
+    Base: TBTNodeBase;
+    State: TBTNodeState;
+    Children: TBTNodeHandleArray;
+    HasMemory: Boolean;
+  end;
+
+  TBTDecoratorNode = record
+    Base: TBTNodeBase;
+    State: TBTNodeState;
+    Child: TBTNodeHandle;
+  end;
+
+  TBTRetryNode = record
+    Base: TBTNodeBase;
+    State: TBTNodeState;
+    Child: TBTNodeHandle;
+    MaxRetries: Integer;
+  end;
+
+  TBTTimerNode = record
+    Base: TBTNodeBase;
+    State: TBTNodeState;
+    Child: TBTNodeHandle;
+    TimerDuration: Integer;
+    EndTime: Int64;
+  end;
+
+  TBTBlackboardConditionNode = record
+    Base: TBTNodeBase;
+    State: TBTNodeState;
+    BlackboardKey: String;
+    CompareValue: Variant;
+    BlackboardOperator: EBBOperator;
+  end;
+
+  TBTConditionalNode = record
+    Base: TBTNodeBase;
+    State: TBTNodeState;
+    Child: TBTNodeHandle;
+    Condition: TBTCondition;
+    ConditionMethod: TBTConditionMethod;
+  end;
+
+  TBTConditionNode = record
+    Base: TBTNodeBase;
+    State: TBTNodeState;
+    Condition: TBTCondition;
+    ConditionMethod: TBTConditionMethod;
+  end;
+
+  TBTWeightedSelectorNode = record
+    Base: TBTNodeBase;
+    State: TBTNodeState;
+    Children: TBTNodeHandleArray;
+    Weights: TSingleArray;
+  end;
+
+  TBTBlackboardSelectorNode = record
+      Base: TBTNodeBase;
+      State: TBTNodeState;
+      Children: TBTNodeHandleArray;
+      BlackboardKey: String;
+  end;
+
+  TBTRepeaterNode = record
+    Base: TBTNodeBase;
+    State: TBTNodeState;
+    Child: TBTNodeHandle;
+    RepeatCount: Integer;
+  end;
+
+  TBTSubtreeNode = record
+    Base: TBTNodeBase;
+    State: TBTNodeState;
+    SubtreeIndex: Integer;
+  end;
+
+  TBTParallelTaskExecutor = record
+    Tree: PBehaviorTree;
+    NodeHandle: TBTNodeHandle;
+    ChildIndex: Integer;
+    Depth: Integer;
+  end;
+
+  TBTParallelNode = record
+    Base: TBTNodeBase;
+    State: TBTNodeState;
+    Children: TBTNodeHandleArray;
+    ParallelTimeoutMS: Integer;
+    ParallelResults: array of EBTStatus;
+    ParallelCompleted: array of Boolean;
+    ParallelTasksSubmitted: Boolean;
+    ParallelStartTime: Int64;
+    Executors: array of TBTParallelTaskExecutor;
+  end;
+
+  TBTLinkNode = record
+    Base: TBTNodeBase;
+    State: TBTNodeState;
+    TargetNode: TBTNodeHandle;
+  end;
+
+  TBTWaitForEventNode = record
+    Base: TBTNodeBase;
+    State: TBTNodeState;
+    EventName: String;
+    IsListening: Boolean;
+    EventReceived: Boolean;
+    EventData: Variant;
+  end;
+
+  TBTBroadcastEventNode = record
+    Base: TBTNodeBase;
+    State: TBTNodeState;
+    EventName: String;
+    EventData: Variant;
+  end;
+
+  TBTEventConditionNode = record
+    Base: TBTNodeBase;
+    State: TBTNodeState;
+    EventName: String;
+    ConsumeEvent: Boolean;
+  end;
+
+  TBTReactiveNode = record
+    Base: TBTNodeBase;
+    State: TBTNodeState;
+    Children: TBTNodeHandleArray;
+    LastConditionStates: array of EBTStatus;
+    RunningChildIndex: Integer;
+    ConditionCheckMask: array of Boolean;
+    LastActivityTimestamp: Double;
+  end;
+
+  TBTDataGathererNode = record
+    Base: TBTNodeBase;
+    State: TBTNodeState;
+    BlackboardKey: String;
+    GatherFunction: TBTAction;
+    GatherMethod: TBTActionMethod;
+    UpdateInterval: Integer;
+    LastUpdateTime: Double;
+    ContinuousUpdate: Boolean;
+  end;
+
+  TBTRepeatUntilNode = record
+    Base: TBTNodeBase;
+    State: TBTNodeState;
+    Child: TBTNodeHandle;
+    RepeatUntilSuccess: Boolean;
+    MaxTries: Integer;
+    CurrentTries: Integer;
+  end;
+
+  TBTDelayNode = record
+    Base: TBTNodeBase;
+    State: TBTNodeState;
+    DelayMS: Integer;
+    StartTime: Int64;
+  end;
+
+  TBTStaticConditionNode = record
+    Base: TBTNodeBase;
+    State: TBTNodeState;
+    AlwaysTrue: Boolean;
+    StaticResult: EBTStatus;
+  end;
+
+  TBTProbabilityNode = record
+    Base: TBTNodeBase;
+    State: TBTNodeState;
+    SuccessChance: Single;
+  end;
+
+  (*
+  ### TBTError
+  Error information structure.
+  
+  ```pascal
+  if MyTree.HasErrors() then
+  begin
+    Error := MyTree.GetLastError();
+    WriteLn(Format('Error in node "%s": %s', [Error.NodeName, Error.Message]));
+  end;
+  ```
+  *)
+  TBTError = record
+    ErrorType: EBTErrorType;
+    Message: String;
+    NodeName: String;
+    Timestamp: Int64;
+  end;
+
+  // Debugging types (for verbose mode)
+  TBTExecutionTrace = record
+    NodePath: String;
+    NodeName: String;
+    Status: EBTStatus;
+    ExecutionTime: Double;
+    Depth: Integer;
+    Timestamp: Int64;
+  end;
+
+  TBTNodeProfile = record
+    NodeName: String;
+    ExecutionCount: Integer;
+    SuccessCount, FailureCount, RunningCount: Integer;
+    TotalTimeMS, MinTimeMS, MaxTimeMS, AvgTimeMS: Double;
+  end;
+
+  // Main behavior tree record
+  TBehaviorTree = record
+    Name: String;
+    Root: TBTNodeHandle;
+    Blackboard: TBlackboard;
+    Subtrees: array of PBehaviorTree;
+    ThreadManager: TThreadManager;
+    ParallelEnabled: Boolean;
+    DefaultParallelTimeoutMS: Integer;
+    Lock: TLock;
+    OwnerOfLock: Boolean;
+    OwnerOfBlackboard: Boolean;
+    DebugLevel: EBTDebugLevel;
+    CurrentExecutionDepth: Integer;
+    
+    // Node storage arrays
+    ActionNodes: array of TBTActionNode;
+    SelectorNodes: array of TBTCompositeNode;
+    SequenceNodes: array of TBTCompositeNode;
+    InverterNodes: array of TBTDecoratorNode;
+    CooldownNodes: array of TBTTimerNode;
+    RetryNodes: array of TBTRetryNode;
+    ForceSuccessNodes: array of TBTDecoratorNode;
+    ForceFailureNodes: array of TBTDecoratorNode;
+    BlackboardConditionNodes: array of TBTBlackboardConditionNode;
+    SubtreeNodes: array of TBTSubtreeNode;
+    ParallelSequenceNodes: array of TBTParallelNode;
+    ParallelSelectorNodes: array of TBTParallelNode;
+    ConditionalNodes: array of TBTConditionalNode;
+    RandomSelectorNodes: array of TBTCompositeNode;
+    WeightedSelectorNodes: array of TBTWeightedSelectorNode;
+    TimeoutNodes: array of TBTTimerNode;
+    RepeaterNodes: array of TBTRepeaterNode;
+    ConditionNodes: array of TBTConditionNode;
+    BlackboardSelectorNodes: array of TBTBlackboardSelectorNode;
+    LinkNodes: array of TBTLinkNode;
+    WaitForEventNodes: array of TBTWaitForEventNode;
+    BroadcastEventNodes: array of TBTBroadcastEventNode;
+    EventConditionNodes: array of TBTEventConditionNode;
+    ReactiveSelectorNodes: array of TBTReactiveNode;
+    ReactiveSequenceNodes: array of TBTReactiveNode;
+    DataGathererNodes: array of TBTDataGathererNode;
+    RepeatUntilNodes: array of TBTRepeatUntilNode;
+    DelayNodes: array of TBTDelayNode;
+    StaticConditionNodes: array of TBTStaticConditionNode;
+    ProbabilityNodes: array of TBTProbabilityNode;
+
+    // Error handling and debugging
+    LastError: TBTError;
+    ErrorHistory: array of TBTError;
+    ExecutionTrace: array of TBTExecutionTrace;
+    MaxTraceSize: Integer;
+    InterruptRequested: Boolean;
+    InterruptReason: String;
+  end; 
+
+(* TREE *)
+
+(*
+## Tree Management
+Core behavior tree management and execution.
+
+Setup -> build tree structure -> Tick repeatedly -> Free when done.
+*)
+
+
+
+// Creates a new node of the specified type and returns a pointer to it
+function TBehaviorTree._CreateNode(NodeType: EBTNodeType; out Index: Integer): Pointer;
+var
+  StaticNode: ^TBTStaticConditionNode;
+begin
+  Result := nil;
+  case NodeType of
+    EBTNodeType.Action: begin Index := Length(Self.ActionNodes); SetLength(Self.ActionNodes, Index + 1); Result := @Self.ActionNodes[Index]; end;
+    EBTNodeType.Selector: begin Index := Length(Self.SelectorNodes); SetLength(Self.SelectorNodes, Index + 1); Result := @Self.SelectorNodes[Index]; end;
+    EBTNodeType.Sequence: begin Index := Length(Self.SequenceNodes); SetLength(Self.SequenceNodes, Index + 1); Result := @Self.SequenceNodes[Index]; end;
+    EBTNodeType.Inverter: begin Index := Length(Self.InverterNodes); SetLength(Self.InverterNodes, Index + 1); Result := @Self.InverterNodes[Index]; end;
+    EBTNodeType.Cooldown: begin Index := Length(Self.CooldownNodes); SetLength(Self.CooldownNodes, Index + 1); Result := @Self.CooldownNodes[Index]; end;
+    EBTNodeType.Retry: begin Index := Length(Self.RetryNodes); SetLength(Self.RetryNodes, Index + 1); Result := @Self.RetryNodes[Index]; end;
+    EBTNodeType.ForceSuccess: begin Index := Length(Self.ForceSuccessNodes); SetLength(Self.ForceSuccessNodes, Index + 1); Result := @Self.ForceSuccessNodes[Index]; end;
+    EBTNodeType.ForceFailure: begin Index := Length(Self.ForceFailureNodes); SetLength(Self.ForceFailureNodes, Index + 1); Result := @Self.ForceFailureNodes[Index]; end;
+    EBTNodeType.BlackboardCondition: begin Index := Length(Self.BlackboardConditionNodes); SetLength(Self.BlackboardConditionNodes, Index + 1); Result := @Self.BlackboardConditionNodes[Index]; end;
+    EBTNodeType.Subtree: begin Index := Length(Self.SubtreeNodes); SetLength(Self.SubtreeNodes, Index + 1); Result := @Self.SubtreeNodes[Index]; end;
+    EBTNodeType.ParallelSequence: begin Index := Length(Self.ParallelSequenceNodes); SetLength(Self.ParallelSequenceNodes, Index + 1); Result := @Self.ParallelSequenceNodes[Index]; end;
+    EBTNodeType.ParallelSelector: begin Index := Length(Self.ParallelSelectorNodes); SetLength(Self.ParallelSelectorNodes, Index + 1); Result := @Self.ParallelSelectorNodes[Index]; end;
+    EBTNodeType.Conditional: begin Index := Length(Self.ConditionalNodes); SetLength(Self.ConditionalNodes, Index + 1); Result := @Self.ConditionalNodes[Index]; end;
+    EBTNodeType.RandomSelector: begin Index := Length(Self.RandomSelectorNodes); SetLength(Self.RandomSelectorNodes, Index + 1); Result := @Self.RandomSelectorNodes[Index]; end;
+    EBTNodeType.WeightedSelector: begin Index := Length(Self.WeightedSelectorNodes); SetLength(Self.WeightedSelectorNodes, Index + 1); Result := @Self.WeightedSelectorNodes[Index]; end;
+    EBTNodeType.Timeout: begin Index := Length(Self.TimeoutNodes); SetLength(Self.TimeoutNodes, Index + 1); Result := @Self.TimeoutNodes[Index]; end;
+    EBTNodeType.Repeater: begin Index := Length(Self.RepeaterNodes); SetLength(Self.RepeaterNodes, Index + 1); Result := @Self.RepeaterNodes[Index]; end;
+    EBTNodeType.Condition: begin Index := Length(Self.ConditionNodes); SetLength(Self.ConditionNodes, Index + 1); Result := @Self.ConditionNodes[Index]; end;
+    EBTNodeType.BlackboardSelector: begin Index := Length(Self.BlackboardSelectorNodes); SetLength(Self.BlackboardSelectorNodes, Index + 1); Result := @Self.BlackboardSelectorNodes[Index]; end;
+    EBTNodeType.Link: begin Index := Length(Self.LinkNodes); SetLength(Self.LinkNodes, Index + 1); Result := @Self.LinkNodes[Index]; end;
+    EBTNodeType.WaitForEvent: begin Index := Length(Self.WaitForEventNodes); SetLength(Self.WaitForEventNodes, Index + 1); Result := @Self.WaitForEventNodes[Index]; end;
+    EBTNodeType.BroadcastEvent: begin Index := Length(Self.BroadcastEventNodes); SetLength(Self.BroadcastEventNodes, Index + 1); Result := @Self.BroadcastEventNodes[Index]; end;
+    EBTNodeType.EventCondition: begin Index := Length(Self.EventConditionNodes); SetLength(Self.EventConditionNodes, Index + 1); Result := @Self.EventConditionNodes[Index]; end;
+    EBTNodeType.ReactiveSelector: begin Index := Length(Self.ReactiveSelectorNodes); SetLength(Self.ReactiveSelectorNodes, Index + 1); Result := @Self.ReactiveSelectorNodes[Index]; end;
+    EBTNodeType.ReactiveSequence: begin Index := Length(Self.ReactiveSequenceNodes); SetLength(Self.ReactiveSequenceNodes, Index + 1); Result := @Self.ReactiveSequenceNodes[Index]; end;
+    EBTNodeType.DataGatherer: begin Index := Length(Self.DataGathererNodes); SetLength(Self.DataGathererNodes, Index + 1); Result := @Self.DataGathererNodes[Index]; end;
+    EBTNodeType.RepeatUntilSuccess: begin Index := Length(Self.RepeatUntilNodes); SetLength(Self.RepeatUntilNodes, Index + 1); Result := @Self.RepeatUntilNodes[Index]; end;
+    EBTNodeType.RepeatUntilFailure: begin Index := Length(Self.RepeatUntilNodes); SetLength(Self.RepeatUntilNodes, Index + 1); Result := @Self.RepeatUntilNodes[Index]; end;
+    EBTNodeType.Delay: begin Index := Length(Self.DelayNodes); SetLength(Self.DelayNodes, Index + 1); Result := @Self.DelayNodes[Index]; end;
+    EBTNodeType.Success: 
+      begin 
+        Index := Length(Self.StaticConditionNodes); 
+        SetLength(Self.StaticConditionNodes, Index + 1); 
+        StaticNode := @Self.StaticConditionNodes[Index];
+        StaticNode^.StaticResult := EBTStatus.Success;
+        Result := StaticNode;
+      end;
+    EBTNodeType.Failure: 
+      begin 
+        Index := Length(Self.StaticConditionNodes); 
+        SetLength(Self.StaticConditionNodes, Index + 1); 
+        StaticNode := @Self.StaticConditionNodes[Index];
+        StaticNode^.StaticResult := EBTStatus.Failure;
+        Result := StaticNode;
+      end;
+    EBTNodeType.Running: 
+      begin 
+        Index := Length(Self.StaticConditionNodes); 
+        SetLength(Self.StaticConditionNodes, Index + 1); 
+        StaticNode := @Self.StaticConditionNodes[Index];
+        StaticNode^.StaticResult := EBTStatus.Running;
+        Result := StaticNode;
+      end;
+    EBTNodeType.Probability: begin Index := Length(Self.ProbabilityNodes); SetLength(Self.ProbabilityNodes, Index + 1); Result := @Self.ProbabilityNodes[Index]; end;
+  end;
+end;
+
+(*
+### TBehaviorTree.AddSubtree
+```pascal
+function TBehaviorTree.AddSubtree(Subtree: PBehaviorTree): Integer;
+```
+Adds a subtree and shares blackboard resources.
+
+Example:
+```pascal
+CombatIndex := MainTree.AddSubtree(CombatTree);
+```
+*)
+function TBehaviorTree.AddSubtree(Subtree: PBehaviorTree): Integer;
+begin
+  Result := Length(Self.Subtrees);
+  SetLength(Self.Subtrees, Result + 1);
+  Self.Subtrees[Result] := Subtree;
+  
+  if Assigned(@Subtree^.Blackboard.Lock) and 
+     (@Subtree^.Blackboard.Lock <> @Self.Blackboard.Lock) then
+  begin
+    try
+      Subtree^.Blackboard.Free();
+    except
+    end;
+  end;
+  Subtree^.Blackboard := Self.Blackboard;
+  Subtree^.OwnerOfBlackboard := False;
+  
+  if Subtree^.OwnerOfLock and Assigned(@Subtree^.Lock) and 
+     (@Subtree^.Lock <> @Self.Lock) then
+  begin
+    try
+      Subtree^.Lock.Free();
+    except
+    end;
+    Subtree^.OwnerOfLock := False;
+  end;
+  Subtree^.Lock := Self.Lock;
+end;
+
+// Gets the base node structure from a node handle
+function TBehaviorTree._GetNodeBase(Handle: TBTNodeHandle): Pointer;
+begin
+  Result := nil;
+  if Handle.Index < 0 then Exit;
+  case Handle.NodeType of
+    EBTNodeType.Action: if Handle.Index < Length(Self.ActionNodes) then Result := @Self.ActionNodes[Handle.Index].Base;
+    EBTNodeType.Selector: if Handle.Index < Length(Self.SelectorNodes) then Result := @Self.SelectorNodes[Handle.Index].Base;
+    EBTNodeType.Sequence: if Handle.Index < Length(Self.SequenceNodes) then Result := @Self.SequenceNodes[Handle.Index].Base;
+    EBTNodeType.Inverter: if Handle.Index < Length(Self.InverterNodes) then Result := @Self.InverterNodes[Handle.Index].Base;
+    EBTNodeType.Cooldown: if Handle.Index < Length(Self.CooldownNodes) then Result := @Self.CooldownNodes[Handle.Index].Base;
+    EBTNodeType.Retry: if Handle.Index < Length(Self.RetryNodes) then Result := @Self.RetryNodes[Handle.Index].Base;
+    EBTNodeType.ForceSuccess: if Handle.Index < Length(Self.ForceSuccessNodes) then Result := @Self.ForceSuccessNodes[Handle.Index].Base;
+    EBTNodeType.ForceFailure: if Handle.Index < Length(Self.ForceFailureNodes) then Result := @Self.ForceFailureNodes[Handle.Index].Base;
+    EBTNodeType.BlackboardCondition: if Handle.Index < Length(Self.BlackboardConditionNodes) then Result := @Self.BlackboardConditionNodes[Handle.Index].Base;
+    EBTNodeType.Subtree: if Handle.Index < Length(Self.SubtreeNodes) then Result := @Self.SubtreeNodes[Handle.Index].Base;
+    EBTNodeType.ParallelSequence: if Handle.Index < Length(Self.ParallelSequenceNodes) then Result := @Self.ParallelSequenceNodes[Handle.Index].Base;
+    EBTNodeType.ParallelSelector: if Handle.Index < Length(Self.ParallelSelectorNodes) then Result := @Self.ParallelSelectorNodes[Handle.Index].Base;
+    EBTNodeType.Conditional: if Handle.Index < Length(Self.ConditionalNodes) then Result := @Self.ConditionalNodes[Handle.Index].Base;
+    EBTNodeType.RandomSelector: if Handle.Index < Length(Self.RandomSelectorNodes) then Result := @Self.RandomSelectorNodes[Handle.Index].Base;
+    EBTNodeType.WeightedSelector: if Handle.Index < Length(Self.WeightedSelectorNodes) then Result := @Self.WeightedSelectorNodes[Handle.Index].Base;
+    EBTNodeType.Timeout: if Handle.Index < Length(Self.TimeoutNodes) then Result := @Self.TimeoutNodes[Handle.Index].Base;
+    EBTNodeType.Repeater: if Handle.Index < Length(Self.RepeaterNodes) then Result := @Self.RepeaterNodes[Handle.Index].Base;
+    EBTNodeType.Condition: if Handle.Index < Length(Self.ConditionNodes) then Result := @Self.ConditionNodes[Handle.Index].Base;
+    EBTNodeType.BlackboardSelector: if Handle.Index < Length(Self.BlackboardSelectorNodes) then Result := @Self.BlackboardSelectorNodes[Handle.Index].Base;
+    EBTNodeType.Link: if Handle.Index < Length(Self.LinkNodes) then Result := @Self.LinkNodes[Handle.Index].Base;
+    EBTNodeType.WaitForEvent: if Handle.Index < Length(Self.WaitForEventNodes) then Result := @Self.WaitForEventNodes[Handle.Index].Base;
+    EBTNodeType.BroadcastEvent: if Handle.Index < Length(Self.BroadcastEventNodes) then Result := @Self.BroadcastEventNodes[Handle.Index].Base;
+    EBTNodeType.EventCondition: if Handle.Index < Length(Self.EventConditionNodes) then Result := @Self.EventConditionNodes[Handle.Index].Base;
+    EBTNodeType.ReactiveSelector: if Handle.Index < Length(Self.ReactiveSelectorNodes) then Result := @Self.ReactiveSelectorNodes[Handle.Index].Base;
+    EBTNodeType.ReactiveSequence: if Handle.Index < Length(Self.ReactiveSequenceNodes) then Result := @Self.ReactiveSequenceNodes[Handle.Index].Base;
+    EBTNodeType.DataGatherer: if Handle.Index < Length(Self.DataGathererNodes) then Result := @Self.DataGathererNodes[Handle.Index].Base;
+    EBTNodeType.RepeatUntilSuccess: if Handle.Index < Length(Self.RepeatUntilNodes) then Result := @Self.RepeatUntilNodes[Handle.Index].Base;
+    EBTNodeType.RepeatUntilFailure: if Handle.Index < Length(Self.RepeatUntilNodes) then Result := @Self.RepeatUntilNodes[Handle.Index].Base;
+    EBTNodeType.Delay: if Handle.Index < Length(Self.DelayNodes) then Result := @Self.DelayNodes[Handle.Index].Base;
+    EBTNodeType.Success: if Handle.Index < Length(Self.StaticConditionNodes) then Result := @Self.StaticConditionNodes[Handle.Index].Base;
+    EBTNodeType.Failure: if Handle.Index < Length(Self.StaticConditionNodes) then Result := @Self.StaticConditionNodes[Handle.Index].Base;
+    EBTNodeType.Running: if Handle.Index < Length(Self.StaticConditionNodes) then Result := @Self.StaticConditionNodes[Handle.Index].Base;
+    EBTNodeType.Probability: if Handle.Index < Length(Self.ProbabilityNodes) then Result := @Self.ProbabilityNodes[Handle.Index].Base;
+  end;
+end;
+
+// Gets the execution state from a node handle
+function TBehaviorTree._GetNodeState(Handle: TBTNodeHandle): Pointer;
+begin
+  Result := nil;
+  if Handle.Index < 0 then Exit;
+  case Handle.NodeType of
+    EBTNodeType.Action: if Handle.Index < Length(Self.ActionNodes) then Result := @Self.ActionNodes[Handle.Index].State;
+    EBTNodeType.Selector: if Handle.Index < Length(Self.SelectorNodes) then Result := @Self.SelectorNodes[Handle.Index].State;
+    EBTNodeType.Sequence: if Handle.Index < Length(Self.SequenceNodes) then Result := @Self.SequenceNodes[Handle.Index].State;
+    EBTNodeType.Inverter: if Handle.Index < Length(Self.InverterNodes) then Result := @Self.InverterNodes[Handle.Index].State;
+    EBTNodeType.Cooldown: if Handle.Index < Length(Self.CooldownNodes) then Result := @Self.CooldownNodes[Handle.Index].State;
+    EBTNodeType.Retry: if Handle.Index < Length(Self.RetryNodes) then Result := @Self.RetryNodes[Handle.Index].State;
+    EBTNodeType.ForceSuccess: if Handle.Index < Length(Self.ForceSuccessNodes) then Result := @Self.ForceSuccessNodes[Handle.Index].State;
+    EBTNodeType.ForceFailure: if Handle.Index < Length(Self.ForceFailureNodes) then Result := @Self.ForceFailureNodes[Handle.Index].State;
+    EBTNodeType.BlackboardCondition: if Handle.Index < Length(Self.BlackboardConditionNodes) then Result := @Self.BlackboardConditionNodes[Handle.Index].State;
+    EBTNodeType.Subtree: if Handle.Index < Length(Self.SubtreeNodes) then Result := @Self.SubtreeNodes[Handle.Index].State;
+    EBTNodeType.ParallelSequence: if Handle.Index < Length(Self.ParallelSequenceNodes) then Result := @Self.ParallelSequenceNodes[Handle.Index].State;
+    EBTNodeType.ParallelSelector: if Handle.Index < Length(Self.ParallelSelectorNodes) then Result := @Self.ParallelSelectorNodes[Handle.Index].State;
+    EBTNodeType.Conditional: if Handle.Index < Length(Self.ConditionalNodes) then Result := @Self.ConditionalNodes[Handle.Index].State;
+    EBTNodeType.RandomSelector: if Handle.Index < Length(Self.RandomSelectorNodes) then Result := @Self.RandomSelectorNodes[Handle.Index].State;
+    EBTNodeType.WeightedSelector: if Handle.Index < Length(Self.WeightedSelectorNodes) then Result := @Self.WeightedSelectorNodes[Handle.Index].State;
+    EBTNodeType.Timeout: if Handle.Index < Length(Self.TimeoutNodes) then Result := @Self.TimeoutNodes[Handle.Index].State;
+    EBTNodeType.Repeater: if Handle.Index < Length(Self.RepeaterNodes) then Result := @Self.RepeaterNodes[Handle.Index].State;
+    EBTNodeType.Condition: if Handle.Index < Length(Self.ConditionNodes) then Result := @Self.ConditionNodes[Handle.Index].State;
+    EBTNodeType.BlackboardSelector: if Handle.Index < Length(Self.BlackboardSelectorNodes) then Result := @Self.BlackboardSelectorNodes[Handle.Index].State;
+    EBTNodeType.Link: if Handle.Index < Length(Self.LinkNodes) then Result := @Self.LinkNodes[Handle.Index].State;
+    EBTNodeType.WaitForEvent: if Handle.Index < Length(Self.WaitForEventNodes) then Result := @Self.WaitForEventNodes[Handle.Index].State;
+    EBTNodeType.BroadcastEvent: if Handle.Index < Length(Self.BroadcastEventNodes) then Result := @Self.BroadcastEventNodes[Handle.Index].State;
+    EBTNodeType.EventCondition: if Handle.Index < Length(Self.EventConditionNodes) then Result := @Self.EventConditionNodes[Handle.Index].State;
+    EBTNodeType.ReactiveSelector: if Handle.Index < Length(Self.ReactiveSelectorNodes) then Result := @Self.ReactiveSelectorNodes[Handle.Index].State;
+    EBTNodeType.ReactiveSequence: if Handle.Index < Length(Self.ReactiveSequenceNodes) then Result := @Self.ReactiveSequenceNodes[Handle.Index].State;
+    EBTNodeType.DataGatherer: if Handle.Index < Length(Self.DataGathererNodes) then Result := @Self.DataGathererNodes[Handle.Index].State;
+    EBTNodeType.RepeatUntilSuccess: if Handle.Index < Length(Self.RepeatUntilNodes) then Result := @Self.RepeatUntilNodes[Handle.Index].State;
+    EBTNodeType.RepeatUntilFailure: if Handle.Index < Length(Self.RepeatUntilNodes) then Result := @Self.RepeatUntilNodes[Handle.Index].State;
+    EBTNodeType.Delay: if Handle.Index < Length(Self.DelayNodes) then Result := @Self.DelayNodes[Handle.Index].State;
+    EBTNodeType.Success: if Handle.Index < Length(Self.StaticConditionNodes) then Result := @Self.StaticConditionNodes[Handle.Index].State;
+    EBTNodeType.Failure: if Handle.Index < Length(Self.StaticConditionNodes) then Result := @Self.StaticConditionNodes[Handle.Index].State;
+    EBTNodeType.Running: if Handle.Index < Length(Self.StaticConditionNodes) then Result := @Self.StaticConditionNodes[Handle.Index].State;
+    EBTNodeType.Probability: if Handle.Index < Length(Self.ProbabilityNodes) then Result := @Self.ProbabilityNodes[Handle.Index].State;
+  end;
+end;
+
+// Gets the children array from a composite node handle
+function TBehaviorTree._GetNodeChildren(Handle: TBTNodeHandle): PBTNodeHandleArray;
+begin
+  Result := nil;
+  if Handle.Index < 0 then Exit;
+  case Handle.NodeType of
+    EBTNodeType.Selector: if Handle.Index < Length(Self.SelectorNodes) then Result := @Self.SelectorNodes[Handle.Index].Children;
+    EBTNodeType.Sequence: if Handle.Index < Length(Self.SequenceNodes) then Result := @Self.SequenceNodes[Handle.Index].Children;
+    EBTNodeType.ParallelSequence: if Handle.Index < Length(Self.ParallelSequenceNodes) then Result := @Self.ParallelSequenceNodes[Handle.Index].Children;
+    EBTNodeType.ParallelSelector: if Handle.Index < Length(Self.ParallelSelectorNodes) then Result := @Self.ParallelSelectorNodes[Handle.Index].Children;
+    EBTNodeType.RandomSelector: if Handle.Index < Length(Self.RandomSelectorNodes) then Result := @Self.RandomSelectorNodes[Handle.Index].Children;
+    EBTNodeType.WeightedSelector: if Handle.Index < Length(Self.WeightedSelectorNodes) then Result := @Self.WeightedSelectorNodes[Handle.Index].Children;
+    EBTNodeType.BlackboardSelector: if Handle.Index < Length(Self.BlackboardSelectorNodes) then Result := @Self.BlackboardSelectorNodes[Handle.Index].Children;
+    EBTNodeType.ReactiveSelector: if Handle.Index < Length(Self.ReactiveSelectorNodes) then Result := @Self.ReactiveSelectorNodes[Handle.Index].Children;
+    EBTNodeType.ReactiveSequence: if Handle.Index < Length(Self.ReactiveSequenceNodes) then Result := @Self.ReactiveSequenceNodes[Handle.Index].Children;
+  end;
+end;
+
+function TBehaviorTree._GetNodeChild(Handle: TBTNodeHandle): TBTNodeHandle;
+begin
+  Result.Index := -1;
+  if Handle.Index < 0 then Exit;
+  case Handle.NodeType of
+    EBTNodeType.Inverter: if Handle.Index < Length(Self.InverterNodes) then Result := Self.InverterNodes[Handle.Index].Child;
+    EBTNodeType.ForceSuccess: if Handle.Index < Length(Self.ForceSuccessNodes) then Result := Self.ForceSuccessNodes[Handle.Index].Child;
+    EBTNodeType.ForceFailure: if Handle.Index < Length(Self.ForceFailureNodes) then Result := Self.ForceFailureNodes[Handle.Index].Child;
+    EBTNodeType.Retry: if Handle.Index < Length(Self.RetryNodes) then Result := Self.RetryNodes[Handle.Index].Child;
+    EBTNodeType.Cooldown: if Handle.Index < Length(Self.CooldownNodes) then Result := Self.CooldownNodes[Handle.Index].Child;
+    EBTNodeType.Timeout: if Handle.Index < Length(Self.TimeoutNodes) then Result := Self.TimeoutNodes[Handle.Index].Child;
+    EBTNodeType.Conditional: if Handle.Index < Length(Self.ConditionalNodes) then Result := Self.ConditionalNodes[Handle.Index].Child;
+    EBTNodeType.Repeater: if Handle.Index < Length(Self.RepeaterNodes) then Result := Self.RepeaterNodes[Handle.Index].Child;
+    EBTNodeType.RepeatUntilSuccess, EBTNodeType.RepeatUntilFailure: if Handle.Index < Length(Self.RepeatUntilNodes) then Result := Self.RepeatUntilNodes[Handle.Index].Child;
+    EBTNodeType.Link: if Handle.Index < Length(Self.LinkNodes) then Result := Self.LinkNodes[Handle.Index].TargetNode;
+  end;
+end;
+
+// Gets the display name from a node handle
+function TBehaviorTree._GetNodeName(Handle: TBTNodeHandle): String;
+var
+  NodeBase: ^TBTNodeBase;
+begin
+  NodeBase := Self._GetNodeBase(Handle);
+  if NodeBase <> nil then
+    Result := NodeBase^.Name
+  else
+    Result := 'Unknown';
+end;
+
+// Converts status enum to display icon
+function TBehaviorTree._GetStatusIcon(Status: EBTStatus): String;
+begin
+  case Status of
+    EBTStatus.Success: Result := '[OK]';
+    EBTStatus.Failure: Result := '[FAIL]';
+    EBTStatus.Running: Result := '[RUN]';
+    else Result := '[?]';
+  end;
+end;
+
+// Converts status enum to string
+function TBehaviorTree._StatusToString(Status: EBTStatus): String;
+begin
+  case Status of
+    EBTStatus.Success: Result := 'SUCCESS';
+    EBTStatus.Failure: Result := 'FAILURE';
+    EBTStatus.Running: Result := 'RUNNING';
+    else Result := 'UNKNOWN';
+  end;
+end;
+
+(*
+### TBehaviorTree.Tick
+```pascal
+function TBehaviorTree.Tick(): EBTStatus;
+```
+Executes the behavior tree by running the root node.
+
+Example:
+```pascal
+Status := MyTree.Tick();
+```
+*)
+function TBehaviorTree.Tick(): EBTStatus;
+var
+  PreviousStatusInt: Integer;
+  StatusChanged: Boolean;
+begin
+  if not Assigned(@Self.Lock) then
+    Self.Setup('DefaultTree');
+  if Self.Root.Index < 0 then
+  begin
+    Self.SetError(EBTErrorType.NullReference, 'Root node is not set', '');
+    Exit(EBTStatus.Failure);
+  end;
+  
+  PreviousStatusInt := Self.Blackboard.Get('_bt_last_status', 0);
+  
+  Self.CurrentExecutionDepth := 0;
+  Result := Self._ExecuteNode(Self.Root, 0);
+  
+  StatusChanged := (Integer(Result) <> PreviousStatusInt);
+  if StatusChanged then
+  begin
+    Self.Blackboard.Put('_bt_last_status', Integer(Result));
+    Self._EmitStateChanged();
+  end;
+end;
+
+// Recursively executes a node and its children, handling all node types
+function TBehaviorTree._ExecuteNode(Handle: TBTNodeHandle; Depth: Integer): EBTStatus;
+var
+  StartTime: Double;
+  NodeBase: ^TBTNodeBase;
+  NodeState: ^TBTNodeState;
+begin
+  if (Handle.Index < 0) then
+  begin
+    Self.SetError(EBTErrorType.NullReference, 'Node handle is invalid', '');
+    Exit(EBTStatus.Failure);
+  end;
+
+  NodeBase := Self._GetNodeBase(Handle);
+  NodeState := Self._GetNodeState(Handle);
+
+  if (NodeBase = nil) or (NodeState = nil) then
+  begin
+      Self.SetError(EBTErrorType.InvalidNode, 'Failed to get node from handle', '');
+      Exit(EBTStatus.Failure);
+  end;
+
+  if Depth >= BT_MAX_RECURSION_DEPTH then
+  begin
+    Self.SetError(EBTErrorType.MaxDepthExceeded, 'Maximum recursion depth exceeded', NodeBase^.Name);
+    Exit(EBTStatus.Failure);
+  end;
+
+  if Self.InterruptRequested then
+  begin
+    if Self.DebugLevel >= EBTDebugLevel.Normal then
+      WriteLn(Format('[INTERRUPT] Node "%s" interrupted by priority event: %s', [NodeBase^.Name, Self.InterruptReason]));
+    Self.InterruptRequested := False;
+    Exit(EBTStatus.Failure);
+  end;
+
+  // Only initialize timing if needed for debugging
+  if Self.DebugLevel = EBTDebugLevel.Verbose then
+    StartTime := PerformanceTime();
+
+  if Self.DebugLevel in [EBTDebugLevel.Normal, EBTDebugLevel.Verbose] then
+    WriteLn(Format('%s--> %s', [''.PadLeft(Depth * 2), NodeBase^.Name]));
+
+  Inc(NodeState^.ExecutionCount);
+
+  case Handle.NodeType of
+    EBTNodeType.Action: Result := Self._ExecuteAction(Handle);
+    EBTNodeType.Selector, EBTNodeType.Sequence, EBTNodeType.RandomSelector: Result := Self._ExecuteComposite(Handle, Depth);
+    EBTNodeType.Inverter, EBTNodeType.ForceSuccess, EBTNodeType.ForceFailure: Result := Self._ExecuteDecorator(Handle, Depth);
+    EBTNodeType.ParallelSelector: Result := Self._HandleParallelNode(Handle, Depth);
+    EBTNodeType.ParallelSequence: Result := Self._HandleParallelNode(Handle, Depth);
+    EBTNodeType.Retry: Result := Self._ExecuteRetry(Handle, Depth);
+    EBTNodeType.Cooldown, EBTNodeType.Timeout: Result := Self._ExecuteTimer(Handle, Depth);
+    EBTNodeType.BlackboardCondition: Result := Self._ExecuteBlackboardCondition(Handle);
+    EBTNodeType.Conditional: Result := Self._ExecuteConditional(Handle, Depth);
+    EBTNodeType.Condition: Result := Self._ExecuteCondition(Handle);
+    EBTNodeType.WeightedSelector: Result := Self._ExecuteWeightedSelector(Handle, Depth);
+    EBTNodeType.BlackboardSelector: Result := Self._ExecuteBlackboardSelector(Handle, Depth);
+    EBTNodeType.Repeater: Result := Self._ExecuteRepeater(Handle, Depth);
+    EBTNodeType.Subtree: Result := Self._ExecuteSubtree(Handle, Depth);
+    EBTNodeType.Link: Result := Self._ExecuteLink(Handle, Depth);
+    EBTNodeType.WaitForEvent: Result := Self._ExecuteWaitForEvent(Handle);
+    EBTNodeType.BroadcastEvent: Result := Self._ExecuteBroadcastEvent(Handle);
+    EBTNodeType.EventCondition: Result := Self._ExecuteEventCondition(Handle);
+    EBTNodeType.ReactiveSelector: Result := Self._ExecuteReactiveComposite(Handle, Depth);
+    EBTNodeType.ReactiveSequence: Result := Self._ExecuteReactiveComposite(Handle, Depth);
+    EBTNodeType.DataGatherer: Result := Self._ExecuteDataGatherer(Handle);
+    EBTNodeType.RepeatUntilSuccess: Result := Self._ExecuteRepeatUntil(Handle, Depth);
+    EBTNodeType.RepeatUntilFailure: Result := Self._ExecuteRepeatUntil(Handle, Depth);
+    EBTNodeType.Delay: Result := Self._ExecuteDelay(Handle);
+    EBTNodeType.Success: Result := Self._ExecuteStaticCondition(Handle);
+    EBTNodeType.Failure: Result := Self._ExecuteStaticCondition(Handle);
+    EBTNodeType.Running: Result := Self._ExecuteStaticCondition(Handle);
+    EBTNodeType.Probability: Result := Self._ExecuteProbability(Handle);
+    else
+    begin
+      Self.SetError(EBTErrorType.InvalidNode, 'Unknown or unhandled node type: ' + ToStr(Handle.NodeType), NodeBase^.Name);
+      Result := EBTStatus.Failure;
+    end;
+  end;
+
+  if Self.DebugLevel = EBTDebugLevel.Verbose then
+    Self._AddTraceEntry(''.PadLeft(Depth, '/') + NodeBase^.Name, NodeBase^.Name, Result, PerformanceTime() - StartTime, Depth);
+  if Self.DebugLevel in [EBTDebugLevel.Normal, EBTDebugLevel.Verbose] then
+    WriteLn(Format('%s<-- %s %s', [''.PadLeft(Depth * 2), NodeBase^.Name, Self._GetStatusIcon(Result)]));
+end;
+
+(*
+### TBehaviorTree.Setup
+```pascal
+procedure TBehaviorTree.Setup(TreeName: String);
+```
+Initializes the behavior tree with default settings.
+
+Example:
+```pascal
+MyTree.Setup('AI Controller');
+```
+*)
+procedure TBehaviorTree.Setup(TreeName: String);
+begin
+  Self.Name := TreeName;
+  Self.Blackboard.Setup();
+  Self.DefaultParallelTimeoutMS := 10000;
+  Self.Lock := TLock.Create();
+  Self.OwnerOfLock := True;
+  Self.OwnerOfBlackboard := True;
+  Self.DebugLevel := EBTDebugLevel.Errors;
+  Self.MaxTraceSize := 100;
+  Self.CurrentExecutionDepth := 0;
+  Self.Root.Index := -1;
+  Self.Root.NodeType := EBTNodeType.Action;
+  Self.InterruptRequested := False;
+  Self.InterruptReason := '';
+end;
+
+(*
+### TBehaviorTree.Free
+```pascal
+procedure TBehaviorTree.Free();
+```
+Cleans up all resources used by the behavior tree.
+
+Example:
+```pascal
+MyTree.Free();
+```
+*)
+procedure TBehaviorTree.Free();
+var
+  i: Integer;
+begin
+  for i := 0 to High(Self.Subtrees) do
+    if Self.Subtrees[i] <> nil then
+    begin
+      Self.Subtrees[i]^.Free();
+      Dispose(Self.Subtrees[i]);
+      Self.Subtrees[i] := nil;
+    end;
+  if Self.ParallelEnabled then
+    Self.ThreadManager.Free();
+  if Self.OwnerOfBlackboard then
+    Self.Blackboard.Free();
+  if Self.OwnerOfLock and Assigned(@Self.Lock) then
+    Self.Lock.Free();
+end;
+
+(*
+### TBehaviorTree.SetDebugLevel
+```pascal
+procedure TBehaviorTree.SetDebugLevel(Level: EBTDebugLevel);
+```
+Sets the debug verbosity level.
+
+Example:
+```pascal
+MyTree.SetDebugLevel(EBTDebugLevel.Verbose); // Detailed logging
+MyTree.SetDebugLevel(EBTDebugLevel.Silent);  // No logging
+```
+*)
+procedure TBehaviorTree.SetDebugLevel(Level: EBTDebugLevel);
+begin
+  Self.DebugLevel := Level;
+  if Level = EBTDebugLevel.Verbose then
+    Self.Blackboard.EnableTracing := True
+  else
+    Self.Blackboard.EnableTracing := False;
+end; 
+
+(* ACTIONS *)
+
+(*
+## Actions
+Action and condition nodes for behavior trees.
+
+Actions execute functions and return success/failure/running.
+Conditions evaluate boolean expressions and return success/failure.
+Blackboard conditions compare stored values for data-driven behavior.
+*)
+
+
+
+(*
+### TBehaviorTree.CreateAction
+```pascal
+function TBehaviorTree.CreateAction(Name: String; ActionFunc: TBTAction): TBTNodeHandle;
+```
+Creates an action node that executes a function.
+
+Example:
+```pascal
+ActionNode := MyTree.CreateAction('Attack', @DoAttack);
+```
+*)
+function TBehaviorTree.CreateAction(Name: String; ActionFunc: TBTAction): TBTNodeHandle;
+var
+  Node: ^TBTActionNode;
+begin
+  Node := Self._CreateNode(EBTNodeType.Action, Result.Index);
+  Node^.Base.Name := Name;
+  Node^.Action := @ActionFunc;
+  Result.NodeType := EBTNodeType.Action;
+end;
+
+(*
+### TBehaviorTree.CreateAction
+```pascal
+function TBehaviorTree.CreateAction(Name: String; ActionMethod: TBTActionMethod): TBTNodeHandle;
+```
+Creates an action node that executes a method.
+
+Example:
+```pascal
+ActionNode := MyTree.CreateAction('Attack', @Self.DoAttack);
+```
+*)
+function TBehaviorTree.CreateAction(Name: String; ActionMethod: TBTActionMethod): TBTNodeHandle; overload;
+var
+  Node: ^TBTActionNode;
+begin
+  Node := Self._CreateNode(EBTNodeType.Action, Result.Index);
+  Node^.Base.Name := Name;
+  Node^.ActionMethod := @ActionMethod;
+  Result.NodeType := EBTNodeType.Action;
+end;
+
+(*
+### TBehaviorTree.CreateCondition
+```pascal
+function TBehaviorTree.CreateCondition(Name: String; ConditionFunc: TBTCondition): TBTNodeHandle;
+```
+Creates a condition node that evaluates a function.
+
+Example:
+```pascal
+ConditionNode := MyTree.CreateCondition('Enemy Nearby', @IsEnemyNearby);
+```
+*)
+function TBehaviorTree.CreateCondition(Name: String; ConditionFunc: TBTCondition): TBTNodeHandle;
+var
+  Node: ^TBTConditionNode;
+begin
+  Node := Self._CreateNode(EBTNodeType.Condition, Result.Index);
+  Node^.Base.Name := Name;
+  Node^.Condition := @ConditionFunc;
+  Result.NodeType := EBTNodeType.Condition;
+end;
+
+(*
+### TBehaviorTree.CreateCondition
+```pascal
+function TBehaviorTree.CreateCondition(Name: String; ConditionMethod: TBTConditionMethod): TBTNodeHandle;
+```
+Creates a condition node that evaluates a method.
+
+Example:
+```pascal
+ConditionNode := MyTree.CreateCondition('Health Low', @Self.IsHealthLow);
+```
+*)
+function TBehaviorTree.CreateCondition(Name: String; ConditionMethod: TBTConditionMethod): TBTNodeHandle; overload;
+var
+  Node: ^TBTConditionNode;
+begin
+  Node := Self._CreateNode(EBTNodeType.Condition, Result.Index);
+  Node^.Base.Name := Name;
+  Node^.ConditionMethod := @ConditionMethod;
+  Result.NodeType := EBTNodeType.Condition;
+end;
+
+(*
+### TBehaviorTree.CreateBlackboardCondition
+```pascal
+function TBehaviorTree.CreateBlackboardCondition(Name: String; Key: String; AOperator: EBBOperator; Value: Variant): TBTNodeHandle;
+```
+Creates a condition that compares a blackboard value.
+
+Example:
+```pascal
+// Check if health > 50
+HealthCheck := MyTree.CreateBlackboardCondition('Health Check', 'Health', EBBOperator.GreaterThan, 50);
+```
+*)
+function TBehaviorTree.CreateBlackboardCondition(Name: String; Key: String; AOperator: EBBOperator; Value: Variant): TBTNodeHandle;
+var
+  Node: ^TBTBlackboardConditionNode;
+  KeyCheck: String;
+begin
+  KeyCheck := Self.Blackboard._CheckKey(Key);
+  if KeyCheck <> '' then
+    WriteLn(Format('[BT WARNING] BlackboardCondition "%s": %s', [Name, KeyCheck]));
+  
+  Node := Self._CreateNode(EBTNodeType.BlackboardCondition, Result.Index);
+  Node^.Base.Name := Name;
+  Node^.BlackboardKey := Key;
+  Node^.BlackboardOperator := AOperator;
+  Node^.CompareValue := Value;
+  Result.NodeType := EBTNodeType.BlackboardCondition;
+end;
+
+// Executes an action node and returns its status
+function TBehaviorTree._ExecuteAction(Handle: TBTNodeHandle): EBTStatus;
+var
+  ActionNode: ^TBTActionNode;
+begin
+  ActionNode := @Self.ActionNodes[Handle.Index];
+  if not Assigned(@ActionNode^.Action) and not Assigned(@ActionNode^.ActionMethod) then
+  begin
+    Self.SetError(EBTErrorType.InvalidNode, 'Action node has no assigned function', ActionNode^.Base.Name);
+    Exit(EBTStatus.Failure);
+  end;
+  if Assigned(@ActionNode^.Action) then
+    Result := ActionNode^.Action()
+  else
+    Result := ActionNode^.ActionMethod();
+end;
+
+// Executes a condition node and returns success/failure based on condition result
+function TBehaviorTree._ExecuteCondition(Handle: TBTNodeHandle): EBTStatus;
+var
+  CondNode: ^TBTConditionNode;
+begin
+  CondNode := @Self.ConditionNodes[Handle.Index];
+  if Assigned(@CondNode^.Condition) then
+  begin
+    if CondNode^.Condition() then Result := EBTStatus.Success else Result := EBTStatus.Failure;
+  end else if Assigned(@CondNode^.ConditionMethod) then
+  begin
+    if CondNode^.ConditionMethod() then Result := EBTStatus.Success else Result := EBTStatus.Failure;
+  end else
+    Result := EBTStatus.Failure;
+end;
+
+// Executes a blackboard condition node by comparing blackboard value with stored value
+function TBehaviorTree._ExecuteBlackboardCondition(Handle: TBTNodeHandle): EBTStatus;
+var
+  BBNode: ^TBTBlackboardConditionNode;
+begin
+  BBNode := @Self.BlackboardConditionNodes[Handle.Index];
+  if Self.Blackboard.Compare(BBNode^.BlackboardKey, BBNode^.BlackboardOperator, BBNode^.CompareValue) then
+    Result := EBTStatus.Success
+  else
+    Result := EBTStatus.Failure;
+end; 
+
+(* COMPOSITES *)
+
+(*
+## Composites
+Composite nodes for behavior trees.
+
+Selector nodes execute children until one succeeds (OR logic).
+Sequence nodes execute children until one fails (AND logic).
+Parallel nodes execute all children simultaneously.
+*)
+
+
+
+(*
+### TBehaviorTree.CreateSelector
+```pascal
+function TBehaviorTree.CreateSelector(Name: String; Children: TBTNodeHandleArray = []; HasMemory: Boolean = False): TBTNodeHandle;
+```
+Creates a selector that tries children until one succeeds.
+
+Example:
+```pascal
+Selector := MyTree.CreateSelector('Combat', [Attack, Defend, Flee]);
+Selector := MyTree.CreateSelector('Empty Selector'); // Empty selector
+```
+*)
+function TBehaviorTree.CreateSelector(Name: String; Children: TBTNodeHandleArray = []; HasMemory: Boolean = False): TBTNodeHandle;
+var
+  Node: ^TBTCompositeNode;
+begin
+  Node := Self._CreateNode(EBTNodeType.Selector, Result.Index);
+  Node^.Base.Name := Name;
+  Node^.Children := Children;
+  Node^.HasMemory := HasMemory;
+  Result.NodeType := EBTNodeType.Selector;
+end;
+
+(*
+### TBehaviorTree.CreateSequence
+```pascal
+function TBehaviorTree.CreateSequence(Name: String; Children: TBTNodeHandleArray = []; HasMemory: Boolean = False): TBTNodeHandle;
+```
+Creates a sequence that executes children until one fails.
+
+Example:
+```pascal
+Sequence := MyTree.CreateSequence('Attack Combo', [Aim, Fire, Reload]);
+Sequence := MyTree.CreateSequence('Empty Sequence'); // Empty sequence
+```
+*)
+function TBehaviorTree.CreateSequence(Name: String; Children: TBTNodeHandleArray = []; HasMemory: Boolean = False): TBTNodeHandle;
+var
+  Node: ^TBTCompositeNode;
+begin
+  Node := Self._CreateNode(EBTNodeType.Sequence, Result.Index);
+  Node^.Base.Name := Name;
+  Node^.Children := Children;
+  Node^.HasMemory := HasMemory;
+  Result.NodeType := EBTNodeType.Sequence;
+end;
+
+(*
+### TBehaviorTree.CreateRandomSelector
+```pascal
+function TBehaviorTree.CreateRandomSelector(Name: String; Children: TBTNodeHandleArray = []): TBTNodeHandle;
+```
+Creates a selector that randomly picks one child each tick.
+
+Example:
+```pascal
+RandomBehavior := MyTree.CreateRandomSelector('Random Patrol', [Left, Right, Center]);
+RandomBehavior := MyTree.CreateRandomSelector('Empty Random'); // Empty random selector
+```
+*)
+function TBehaviorTree.CreateRandomSelector(Name: String; Children: TBTNodeHandleArray = []): TBTNodeHandle;
+var
+  Node: ^TBTCompositeNode;
+begin
+  Node := Self._CreateNode(EBTNodeType.RandomSelector, Result.Index);
+  Node^.Base.Name := Name;
+  Node^.Children := Children;
+  Result.NodeType := EBTNodeType.RandomSelector;
+end;
+
+(*
+### TBehaviorTree.CreateWeightedSelector
+```pascal
+function TBehaviorTree.CreateWeightedSelector(Name: String; Children: TBTNodeHandleArray = []; Weights: TSingleArray): TBTNodeHandle;
+```
+Creates a selector that picks children based on weights.
+
+Example:
+```pascal
+// 70% attack, 20% defend, 10% flee
+WeightedCombat := MyTree.CreateWeightedSelector('Combat', [Attack, Defend, Flee], [0.7, 0.2, 0.1]);
+WeightedCombat := MyTree.CreateWeightedSelector('Empty Weighted', [], [1.0]); // Empty weighted selector
+```
+*)
+function TBehaviorTree.CreateWeightedSelector(Name: String; Children: TBTNodeHandleArray = []; Weights: TSingleArray): TBTNodeHandle;
+var
+  Node: ^TBTWeightedSelectorNode;
+begin
+  Node := Self._CreateNode(EBTNodeType.WeightedSelector, Result.Index);
+  Node^.Base.Name := Name;
+  Node^.Children := Children;
+  Node^.Weights := Weights;
+  if (Length(Children) > 0) and (Length(Weights) <> Length(Children)) then
+    Self.SetError(EBTErrorType.InvalidNode, 'WeightedSelector weights count must match children count', Name);
+  Result.NodeType := EBTNodeType.WeightedSelector;
+end;
+
+(*
+### TBehaviorTree.CreateBlackboardSelector
+```pascal
+function TBehaviorTree.CreateBlackboardSelector(Name: String; Key: String; Children: TBTNodeHandleArray = []): TBTNodeHandle;
+```
+Creates a selector that chooses a child based on blackboard value.
+
+Example:
+```pascal
+// Blackboard value 'State' determines which child to run
+StateSelector := MyTree.CreateBlackboardSelector('State Machine', 'State', [Idle, Combat, Explore]);
+StateSelector := MyTree.CreateBlackboardSelector('Empty State', 'State', []); // Empty blackboard selector
+```
+*)
+function TBehaviorTree.CreateBlackboardSelector(Name: String; Key: String; Children: TBTNodeHandleArray = []): TBTNodeHandle;
+var
+  Node: ^TBTBlackboardSelectorNode;
+  KeyCheck: String;
+begin
+  KeyCheck := Self.Blackboard._CheckKey(Key);
+  if KeyCheck <> '' then
+    WriteLn(Format('[BT WARNING] BlackboardSelector "%s": %s', [Name, KeyCheck]));
+  
+  Node := Self._CreateNode(EBTNodeType.BlackboardSelector, Result.Index);
+  Node^.Base.Name := Name;
+  Node^.Children := Children;
+  Node^.BlackboardKey := Key;
+  Result.NodeType := EBTNodeType.BlackboardSelector;
+end;
+
+(*
+### TBehaviorTree.CreateParallelSelector
+```pascal
+function TBehaviorTree.CreateParallelSelector(Name: String; Children: TBTNodeHandleArray = []; TimeoutMS: Integer = 0): TBTNodeHandle;
+```
+Creates a parallel selector that succeeds when any child succeeds.
+
+Example:
+```pascal
+ParallelSearch := MyTree.CreateParallelSelector('Search', [SearchLeft, SearchRight]);
+ParallelSearch := MyTree.CreateParallelSelector('Empty Parallel'); // Empty parallel selector
+```
+*)
+function TBehaviorTree.CreateParallelSelector(Name: String; Children: TBTNodeHandleArray = []; TimeoutMS: Integer = 0): TBTNodeHandle;
+var
+  Node: ^TBTParallelNode;
+begin
+  Node := Self._CreateNode(EBTNodeType.ParallelSelector, Result.Index);
+  Node^.Base.Name := Name;
+  Node^.Children := Children;
+  if TimeoutMS > 0 then
+    Node^.ParallelTimeoutMS := TimeoutMS
+  else
+    Node^.ParallelTimeoutMS := Self.DefaultParallelTimeoutMS;
+  if not Self.ParallelEnabled then
+  begin
+    Self.ParallelEnabled := True;
+    Self.ThreadManager.Init(0, EDebugLevel.NONE);
+  end;
+  Result.NodeType := EBTNodeType.ParallelSelector;
+end;
+
+(*
+### TBehaviorTree.CreateParallelSequence
+```pascal
+function TBehaviorTree.CreateParallelSequence(Name: String; Children: TBTNodeHandleArray = []; TimeoutMS: Integer = 0): TBTNodeHandle;
+```
+Creates a parallel sequence that succeeds when all children succeed.
+
+Example:
+```pascal
+ParallelPrep := MyTree.CreateParallelSequence('Prep', [LoadWeapon, AimTarget, CheckAmmo]);
+ParallelPrep := MyTree.CreateParallelSequence('Empty Parallel Seq'); // Empty parallel sequence
+```
+*)
+function TBehaviorTree.CreateParallelSequence(Name: String; Children: TBTNodeHandleArray = []; TimeoutMS: Integer = 0): TBTNodeHandle;
+var
+  Node: ^TBTParallelNode;
+begin
+  Node := Self._CreateNode(EBTNodeType.ParallelSequence, Result.Index);
+  Node^.Base.Name := Name;
+  Node^.Children := Children;
+  if TimeoutMS > 0 then
+    Node^.ParallelTimeoutMS := TimeoutMS
+  else
+    Node^.ParallelTimeoutMS := Self.DefaultParallelTimeoutMS;
+  if not Self.ParallelEnabled then
+  begin
+    Self.ParallelEnabled := True;
+    Self.ThreadManager.Init(0, EDebugLevel.NONE);
+  end;
+  Result.NodeType := EBTNodeType.ParallelSequence;
+end;
+
+// Selects a weighted child based on probability distribution
+function TBehaviorTree._PickWeightedChild(Handle: TBTNodeHandle): Integer;
+var
+  i: Integer;
+  TotalWeight, RandomValue, CurrentWeight: Single;
+  Node: ^TBTWeightedSelectorNode;
+begin
+  Result := -1;
+  Node := @Self.WeightedSelectorNodes[Handle.Index];
+  if (Length(Node^.Weights) = 0) then Exit;
+  TotalWeight := 0.0;
+  for i := 0 to High(Node^.Weights) do
+    TotalWeight := TotalWeight + Node^.Weights[i];
+  if TotalWeight <= 0.0 then Exit;
+  RandomValue := Random() * TotalWeight;
+  CurrentWeight := 0.0;
+  for i := 0 to High(Node^.Weights) do
+  begin
+    CurrentWeight := CurrentWeight + Node^.Weights[i];
+    if RandomValue < CurrentWeight then
+    begin
+      Result := i;
+      Break;
+    end;
+  end;
+end;
+
+// Executes composite nodes (selector, sequence, random selector)
+function TBehaviorTree._ExecuteComposite(Handle: TBTNodeHandle; Depth: Integer): EBTStatus;
+var
+  i, StartIndex: Integer;
+  ChildStatus: EBTStatus;
+  CompositeNode: ^TBTCompositeNode;
+  NodeState: ^TBTNodeState;
+begin
+  case Handle.NodeType of
+    EBTNodeType.Selector: CompositeNode := @Self.SelectorNodes[Handle.Index];
+    EBTNodeType.Sequence: CompositeNode := @Self.SequenceNodes[Handle.Index];
+    EBTNodeType.RandomSelector: CompositeNode := @Self.RandomSelectorNodes[Handle.Index];
+  end;
+  NodeState := @CompositeNode^.State;
+
+  if Handle.NodeType = EBTNodeType.RandomSelector then
+  begin
+    if Length(CompositeNode^.Children) > 0 then
+    begin
+      i := Random(Length(CompositeNode^.Children));
+      Result := Self._ExecuteNode(CompositeNode^.Children[i], Depth + 1);
+    end else Result := EBTStatus.Failure;
+    Exit;
+  end;
+
+  StartIndex := 0;
+  if CompositeNode^.HasMemory and (NodeState^.RunningChildIndex > -1) then
+    StartIndex := NodeState^.RunningChildIndex;
+
+  for i := StartIndex to High(CompositeNode^.Children) do
+  begin
+    ChildStatus := Self._ExecuteNode(CompositeNode^.Children[i], Depth + 1);
+    if (Handle.NodeType = EBTNodeType.Selector) and (ChildStatus <> EBTStatus.Failure) then
+    begin
+      if ChildStatus = EBTStatus.Running then NodeState^.RunningChildIndex := i else NodeState^.RunningChildIndex := -1;
+      Exit(ChildStatus);
+    end;
+    if (Handle.NodeType = EBTNodeType.Sequence) and (ChildStatus <> EBTStatus.Success) then
+    begin
+      if ChildStatus = EBTStatus.Running then NodeState^.RunningChildIndex := i else NodeState^.RunningChildIndex := -1;
+      Exit(ChildStatus);
+    end;
+  end;
+  NodeState^.RunningChildIndex := -1;
+  if Handle.NodeType = EBTNodeType.Selector then Result := EBTStatus.Failure else Result := EBTStatus.Success;
+end;
+
+// Executes weighted selector nodes by picking a child based on weights
+function TBehaviorTree._ExecuteWeightedSelector(Handle: TBTNodeHandle; Depth: Integer): EBTStatus;
+var
+  i: Integer;
+  WSNode: ^TBTWeightedSelectorNode;
+begin
+  WSNode := @Self.WeightedSelectorNodes[Handle.Index];
+  if Length(WSNode^.Children) > 0 then
+  begin
+    i := Self._PickWeightedChild(Handle);
+    if (i >= 0) then
+      Result := Self._ExecuteNode(WSNode^.Children[i], Depth + 1)
+    else
+      Result := EBTStatus.Failure;
+  end else
+    Result := EBTStatus.Failure;
+end;
+
+// Executes blackboard selector nodes by using blackboard value as child index
+function TBehaviorTree._ExecuteBlackboardSelector(Handle: TBTNodeHandle; Depth: Integer): EBTStatus;
+var
+  i: Integer;
+  BSNode: ^TBTBlackboardSelectorNode;
+begin
+  BSNode := @Self.BlackboardSelectorNodes[Handle.Index];
+  if (BSNode^.BlackboardKey <> '') and (Length(BSNode^.Children) > 0) then
+  begin
+    i := Self.Blackboard.Get(BSNode^.BlackboardKey, -1);
+    if (i >= 0) and (i < Length(BSNode^.Children)) then
+      Result := Self._ExecuteNode(BSNode^.Children[i], Depth + 1)
+    else
+      Result := EBTStatus.Failure;
+  end else
+    Result := EBTStatus.Failure;
+end;
+
+// Executes a single child task in parallel execution
+procedure TBTParallelTaskExecutor.Execute();
+var
+  Status: EBTStatus;
+  ParallelNode: ^TBTParallelNode;
+begin
+  if (Self.Tree = nil) or (Self.NodeHandle.Index < 0) then Exit;
+
+  // Get the correct parallel node based on the handle's NodeType
+  if Self.NodeHandle.NodeType = EBTNodeType.ParallelSelector then
+    ParallelNode := @Self.Tree^.ParallelSelectorNodes[Self.NodeHandle.Index]
+  else if Self.NodeHandle.NodeType = EBTNodeType.ParallelSequence then
+    ParallelNode := @Self.Tree^.ParallelSequenceNodes[Self.NodeHandle.Index]
+  else
+    Exit;
+
+  if (Self.ChildIndex > High(ParallelNode^.Children)) or (ParallelNode^.Children[Self.ChildIndex].Index < 0) then
+    Status := EBTStatus.Failure
+  else
+    Status := Self.Tree^._ExecuteNode(ParallelNode^.Children[Self.ChildIndex], Self.Depth);
+
+  if Assigned(@Self.Tree^.Lock) then
+  begin
+    Self.Tree^.Lock.Enter();
+    try
+      ParallelNode^.ParallelResults[Self.ChildIndex] := Status;
+      ParallelNode^.ParallelCompleted[Self.ChildIndex] := True;
+    finally
+      Self.Tree^.Lock.Leave();
+    end;
+  end else
+  begin
+    ParallelNode^.ParallelResults[Self.ChildIndex] := Status;
+    ParallelNode^.ParallelCompleted[Self.ChildIndex] := True;
+  end;
+end;
+
+// Handles parallel node execution by managing concurrent child tasks
+function TBehaviorTree._HandleParallelNode(Handle: TBTNodeHandle; Depth: Integer): EBTStatus;
+var
+  i, ChildCount, CompletedCount, SuccessCount, FailureCount: Integer;
+  ParallelNode: ^TBTParallelNode;
+  TaskID: String;
+begin
+  if Handle.NodeType = EBTNodeType.ParallelSelector then
+    ParallelNode := @Self.ParallelSelectorNodes[Handle.Index]
+  else
+    ParallelNode := @Self.ParallelSequenceNodes[Handle.Index];
+
+  ChildCount := Length(ParallelNode^.Children);
+
+  if ChildCount = 0 then
+  begin
+    if Handle.NodeType = EBTNodeType.ParallelSelector then
+      Exit(EBTStatus.Failure)
+    else 
+      Exit(EBTStatus.Success);
+  end;
+
+  if not ParallelNode^.ParallelTasksSubmitted then
+  begin
+    SetLength(ParallelNode^.ParallelResults, ChildCount);
+    SetLength(ParallelNode^.ParallelCompleted, ChildCount);
+    SetLength(ParallelNode^.Executors, ChildCount);
+    for i := 0 to ChildCount - 1 do
+    begin
+      ParallelNode^.ParallelCompleted[i] := False;
+      
+      ParallelNode^.Executors[i].Tree := @Self;
+      ParallelNode^.Executors[i].NodeHandle := Handle;
+      ParallelNode^.Executors[i].ChildIndex := i;
+      ParallelNode^.Executors[i].Depth := Depth + 1;
+      
+      TaskID := ParallelNode^.Base.Name + '-child-' + IntToStr(i) + '-' + IntToStr(Time());
+      Self.ThreadManager.Submit(TaskID, @ParallelNode^.Executors[i].Execute, 0, True);
+    end;
+    
+    ParallelNode^.ParallelTasksSubmitted := True;
+    ParallelNode^.ParallelStartTime := Time();
+    Result := EBTStatus.Running;
+    Exit;
+  end;
+
+  CompletedCount := 0;
+  SuccessCount := 0;
+  FailureCount := 0;
+  
+  if Assigned(@Self.Lock) then
+  begin
+    Self.Lock.Enter();
+    try
+      for i := 0 to ChildCount - 1 do
+      begin
+        if ParallelNode^.ParallelCompleted[i] then
+        begin
+          Inc(CompletedCount);
+          case ParallelNode^.ParallelResults[i] of
+            EBTStatus.Success: Inc(SuccessCount);
+            EBTStatus.Failure: Inc(FailureCount);
+          end;
+        end;
+      end;
+    finally
+      Self.Lock.Leave();
+    end;
+  end else
+  begin
+    for i := 0 to ChildCount - 1 do
+    begin
+      if ParallelNode^.ParallelCompleted[i] then
+      begin
+        Inc(CompletedCount);
+        case ParallelNode^.ParallelResults[i] of
+          EBTStatus.Success: Inc(SuccessCount);
+          EBTStatus.Failure: Inc(FailureCount);
+        end;
+      end;
+    end;
+  end;
+
+  if (ParallelNode^.ParallelTimeoutMS > 0) and ((Time() - ParallelNode^.ParallelStartTime) >= ParallelNode^.ParallelTimeoutMS) then
+  begin
+    ParallelNode^.ParallelTasksSubmitted := False;
+    Result := EBTStatus.Failure;
+    Exit;
+  end;
+
+  if (Handle.NodeType = EBTNodeType.ParallelSelector) and (SuccessCount > 0) then
+  begin
+    ParallelNode^.ParallelTasksSubmitted := False;
+    Result := EBTStatus.Success;
+    Exit;
+  end;
+
+  if (Handle.NodeType = EBTNodeType.ParallelSequence) and (FailureCount > 0) then
+  begin
+    ParallelNode^.ParallelTasksSubmitted := False;
+    Result := EBTStatus.Failure;
+    Exit;
+  end;
+
+  if CompletedCount < ChildCount then
+  begin
+    Result := EBTStatus.Running;
+    Exit;
+  end;
+  
+  if Handle.NodeType = EBTNodeType.ParallelSelector then
+    Result := EBTStatus.Failure
+  else
+    Result := EBTStatus.Success;
+
+  ParallelNode^.ParallelTasksSubmitted := False;
+end; 
+
+(*
+### TBehaviorTree.AddChild
+```pascal
+procedure TBehaviorTree.AddChild(Parent: TBTNodeHandle; Child: TBTNodeHandle);
+```
+Adds a child to an existing composite node.
+
+Example:
+```pascal
+MakeSeq := MyTree.CreateSequence('Make Product');
+MyTree.AddChild(MakeSeq, MyTree.CreateCondition('Have Materials?', @Self.HasItems));
+MyTree.AddChild(MakeSeq, MyTree.CreateAction('Do Make', @Self.DoMake));
+```
+*)
+procedure TBehaviorTree.AddChild(Parent: TBTNodeHandle; Child: TBTNodeHandle);
+var
+  Children: PBTNodeHandleArray;
+begin
+  Children := Self._GetNodeChildren(Parent);
+  if Children <> nil then
+  begin
+    SetLength(Children^, Length(Children^) + 1);
+    Children^[High(Children^)] := Child;
+  end;
+end;
+
+(*
+### TBehaviorTree.AddChildren
+```pascal
+procedure TBehaviorTree.AddChildren(Parent: TBTNodeHandle; NewChildren: TBTNodeHandleArray);
+```
+Adds multiple children to an existing composite node.
+
+Example:
+```pascal
+MakeSeq := MyTree.CreateSequence('Make Product');
+MyTree.AddChildren(MakeSeq, [
+  MyTree.CreateCondition('Have Materials?', @Self.HasItems),
+  MyTree.CreateAction('Do Make', @Self.DoMake)
+]);
+```
+*)
+procedure TBehaviorTree.AddChildren(Parent: TBTNodeHandle; NewChildren: TBTNodeHandleArray);
+var
+  Children: PBTNodeHandleArray;
+  i, StartIndex: Integer;
+begin
+  Children := Self._GetNodeChildren(Parent);
+  if Children <> nil then
+  begin
+    StartIndex := Length(Children^);
+    SetLength(Children^, StartIndex + Length(NewChildren));
+    for i := 0 to High(NewChildren) do
+      Children^[StartIndex + i] := NewChildren[i];
+  end;
+end; 
+
+(* DECORATORS *)
+
+(*
+## Decorators
+Decorator nodes for behavior trees.
+
+Decorators wrap a single child and modify its behavior.
+Inverter flips success/failure results.
+Retry repeats failed children.
+Timer decorators add cooldowns and timeouts.
+*)
+
+
+
+(*
+### TBehaviorTree.CreateInverter
+```pascal
+function TBehaviorTree.CreateInverter(Name: String; Child: TBTNodeHandle): TBTNodeHandle;
+```
+Creates an inverter that flips success/failure results.
+
+Example:
+```pascal
+NotEnemyNearby := MyTree.CreateInverter('Not Enemy Nearby', EnemyCheck);
+```
+*)
+function TBehaviorTree.CreateInverter(Name: String; Child: TBTNodeHandle): TBTNodeHandle;
+var
+  Node: ^TBTDecoratorNode;
+begin
+  Node := Self._CreateNode(EBTNodeType.Inverter, Result.Index);
+  Node^.Base.Name := Name;
+  Node^.Child := Child;
+  Result.NodeType := EBTNodeType.Inverter;
+end;
+
+(*
+### TBehaviorTree.CreateForceSuccess
+```pascal
+function TBehaviorTree.CreateForceSuccess(Name: String; Child: TBTNodeHandle): TBTNodeHandle;
+```
+Creates a decorator that always returns success.
+
+Example:
+```pascal
+OptionalAction := MyTree.CreateForceSuccess('Optional', SomeAction);
+```
+*)
+function TBehaviorTree.CreateForceSuccess(Name: String; Child: TBTNodeHandle): TBTNodeHandle;
+var
+  Node: ^TBTDecoratorNode;
+begin
+  Node := Self._CreateNode(EBTNodeType.ForceSuccess, Result.Index);
+  Node^.Base.Name := Name;
+  Node^.Child := Child;
+  Result.NodeType := EBTNodeType.ForceSuccess;
+end;
+
+(*
+### TBehaviorTree.CreateForceFailure
+```pascal
+function TBehaviorTree.CreateForceFailure(Name: String; Child: TBTNodeHandle): TBTNodeHandle;
+```
+Creates a decorator that always returns failure.
+
+Example:
+```pascal
+DisabledAction := MyTree.CreateForceFailure('Disabled', SomeAction);
+```
+*)
+function TBehaviorTree.CreateForceFailure(Name: String; Child: TBTNodeHandle): TBTNodeHandle;
+var
+  Node: ^TBTDecoratorNode;
+begin
+  Node := Self._CreateNode(EBTNodeType.ForceFailure, Result.Index);
+  Node^.Base.Name := Name;
+  Node^.Child := Child;
+  Result.NodeType := EBTNodeType.ForceFailure;
+end;
+
+(*
+### TBehaviorTree.CreateRetry
+```pascal
+function TBehaviorTree.CreateRetry(Name: String; Child: TBTNodeHandle; MaxRetries: Integer): TBTNodeHandle;
+```
+Creates a retry decorator that repeats failed children.
+
+Example:
+```pascal
+RetryAction := MyTree.CreateRetry('Retry Connect', NetworkAction, 3);
+```
+*)
+function TBehaviorTree.CreateRetry(Name: String; Child: TBTNodeHandle; MaxRetries: Integer): TBTNodeHandle;
+var
+  Node: ^TBTRetryNode;
+begin
+  Node := Self._CreateNode(EBTNodeType.Retry, Result.Index);
+  Node^.Base.Name := Name;
+  Node^.Child := Child;
+  Node^.MaxRetries := MaxRetries;
+  Result.NodeType := EBTNodeType.Retry;
+end;
+
+(*
+### TBehaviorTree.CreateCooldown
+```pascal
+function TBehaviorTree.CreateCooldown(Name: String; Child: TBTNodeHandle; CooldownMS: Integer): TBTNodeHandle;
+```
+Creates a cooldown decorator that limits execution frequency.
+
+Example:
+```pascal
+CooledAttack := MyTree.CreateCooldown('Cooled Attack', SpecialAttack, 5000);
+```
+*)
+function TBehaviorTree.CreateCooldown(Name: String; Child: TBTNodeHandle; CooldownMS: Integer): TBTNodeHandle;
+var
+  Node: ^TBTTimerNode;
+begin
+  Node := Self._CreateNode(EBTNodeType.Cooldown, Result.Index);
+  Node^.Base.Name := Name;
+  Node^.Child := Child;
+  Node^.TimerDuration := CooldownMS;
+  Result.NodeType := EBTNodeType.Cooldown;
+end;
+
+(*
+### TBehaviorTree.CreateTimeout
+```pascal
+function TBehaviorTree.CreateTimeout(Name: String; Child: TBTNodeHandle; TimeoutMS: Integer): TBTNodeHandle;
+```
+Creates a timeout decorator that limits execution time.
+
+Example:
+```pascal
+TimedAction := MyTree.CreateTimeout('Timed Action', LongAction, 10000);
+```
+*)
+function TBehaviorTree.CreateTimeout(Name: String; Child: TBTNodeHandle; TimeoutMS: Integer): TBTNodeHandle;
+var
+  Node: ^TBTTimerNode;
+begin
+  Node := Self._CreateNode(EBTNodeType.Timeout, Result.Index);
+  Node^.Base.Name := Name;
+  Node^.Child := Child;
+  Node^.TimerDuration := TimeoutMS;
+  Result.NodeType := EBTNodeType.Timeout;
+end;
+
+(*
+### TBehaviorTree.CreateRepeater
+```pascal
+function TBehaviorTree.CreateRepeater(Name: String; Child: TBTNodeHandle; Count: Integer): TBTNodeHandle;
+```
+Creates a repeater that executes a child multiple times.
+
+Example:
+```pascal
+TripleShot := MyTree.CreateRepeater('Triple Shot', FireAction, 3);
+```
+*)
+function TBehaviorTree.CreateRepeater(Name: String; Child: TBTNodeHandle; Count: Integer): TBTNodeHandle;
+var
+  Node: ^TBTRepeaterNode;
+begin
+  Node := Self._CreateNode(EBTNodeType.Repeater, Result.Index);
+  Node^.Base.Name := Name;
+  Node^.Child := Child;
+  Node^.RepeatCount := Count;
+  Result.NodeType := EBTNodeType.Repeater;
+end;
+
+(*
+### TBehaviorTree.CreateConditional
+```pascal
+function TBehaviorTree.CreateConditional(Name: String; Child: TBTNodeHandle; ConditionFunc: TBTCondition): TBTNodeHandle;
+```
+Creates a conditional decorator that gates child execution.
+
+Example:
+```pascal
+ConditionalAttack := MyTree.CreateConditional('Conditional Attack', AttackAction, @IsWeaponLoaded);
+```
+*)
+function TBehaviorTree.CreateConditional(Name: String; Child: TBTNodeHandle; ConditionFunc: TBTCondition): TBTNodeHandle;
+var
+  Node: ^TBTConditionalNode;
+begin
+  Node := Self._CreateNode(EBTNodeType.Conditional, Result.Index);
+  Node^.Base.Name := Name;
+  Node^.Child := Child;
+  Node^.Condition := @ConditionFunc;
+  Result.NodeType := EBTNodeType.Conditional;
+end;
+
+(*
+### TBehaviorTree.CreateConditional
+```pascal
+function TBehaviorTree.CreateConditional(Name: String; Child: TBTNodeHandle; ConditionMethod: TBTConditionMethod): TBTNodeHandle;
+```
+Creates a conditional decorator using a method.
+
+Example:
+```pascal
+ConditionalHeal := MyTree.CreateConditional('Conditional Heal', HealAction, @Self.IsHealthLow);
+```
+*)
+function TBehaviorTree.CreateConditional(Name: String; Child: TBTNodeHandle; ConditionMethod: TBTConditionMethod): TBTNodeHandle; overload;
+var
+  Node: ^TBTConditionalNode;
+begin
+  Node := Self._CreateNode(EBTNodeType.Conditional, Result.Index);
+  Node^.Base.Name := Name;
+  Node^.Child := Child;
+  Node^.ConditionMethod := @ConditionMethod;
+  Result.NodeType := EBTNodeType.Conditional;
+end;
+
+(*
+### TBehaviorTree.CreateSubtree
+```pascal
+function TBehaviorTree.CreateSubtree(Name: String; SubtreeIndex: Integer): TBTNodeHandle;
+```
+Creates a subtree node that executes a separate behavior tree.
+
+Example:
+```pascal
+CombatSubtree := MyTree.CreateSubtree('Combat', CombatTreeIndex);
+```
+*)
+function TBehaviorTree.CreateSubtree(Name: String; SubtreeIndex: Integer): TBTNodeHandle;
+var
+  Node: ^TBTSubtreeNode;
+begin
+  Node := Self._CreateNode(EBTNodeType.Subtree, Result.Index);
+  Node^.Base.Name := Name;
+  Node^.SubtreeIndex := SubtreeIndex;
+  Result.NodeType := EBTNodeType.Subtree;
+end;
+
+(*
+### TBehaviorTree.CreateLink
+```pascal
+function TBehaviorTree.CreateLink(Name: String; Target: TBTNodeHandle): TBTNodeHandle;
+```
+Creates a link node that jumps to another node.
+
+Example:
+```pascal
+LinkToCleanup := MyTree.CreateLink('Link to Cleanup', CleanupNode);
+```
+*)
+function TBehaviorTree.CreateLink(Name: String; Target: TBTNodeHandle): TBTNodeHandle;
+var
+  Node: ^TBTLinkNode;
+begin
+  Node := Self._CreateNode(EBTNodeType.Link, Result.Index);
+  Node^.Base.Name := Name;
+  Node^.TargetNode := Target;
+  Result.NodeType := EBTNodeType.Link;
+end;
+
+// Executes decorator nodes by modifying child results
+function TBehaviorTree._ExecuteDecorator(Handle: TBTNodeHandle; Depth: Integer): EBTStatus;
+var
+  DecoratorNode: ^TBTDecoratorNode;
+begin
+  case Handle.NodeType of
+    EBTNodeType.Inverter: DecoratorNode := @Self.InverterNodes[Handle.Index];
+    EBTNodeType.ForceSuccess: DecoratorNode := @Self.ForceSuccessNodes[Handle.Index];
+    EBTNodeType.ForceFailure: DecoratorNode := @Self.ForceFailureNodes[Handle.Index];
+  end;
+  case Handle.NodeType of
+    EBTNodeType.Inverter:
+        case Self._ExecuteNode(DecoratorNode^.Child, Depth + 1) of
+          EBTStatus.Success: Result := EBTStatus.Failure;
+          EBTStatus.Failure: Result := EBTStatus.Success;
+          EBTStatus.Running: Result := EBTStatus.Running;
+        end;
+    EBTNodeType.ForceSuccess: 
+        if Self._ExecuteNode(DecoratorNode^.Child, Depth + 1) = EBTStatus.Running then 
+          Result := EBTStatus.Running 
+        else 
+          Result := EBTStatus.Success;
+    EBTNodeType.ForceFailure: 
+        if Self._ExecuteNode(DecoratorNode^.Child, Depth + 1) = EBTStatus.Running then 
+          Result := EBTStatus.Running 
+        else 
+          Result := EBTStatus.Failure;
+  end;
+end;
+
+// Executes retry nodes by repeating child on failure
+function TBehaviorTree._ExecuteRetry(Handle: TBTNodeHandle; Depth: Integer): EBTStatus;
+var
+  RetryNode: ^TBTRetryNode;
+begin
+  RetryNode := @Self.RetryNodes[Handle.Index];
+  Result := Self._ExecuteNode(RetryNode^.Child, Depth + 1);
+  if Result = EBTStatus.Failure then
+  begin
+    Inc(RetryNode^.State.RetryCount);
+    if RetryNode^.State.RetryCount > RetryNode^.MaxRetries then
+      Result := EBTStatus.Failure
+    else
+      Result := EBTStatus.Running;
+  end;
+  if Result <> EBTStatus.Running then RetryNode^.State.RetryCount := 0;
+end;
+
+// Executes timer nodes (cooldown and timeout) with time-based constraints
+function TBehaviorTree._ExecuteTimer(Handle: TBTNodeHandle; Depth: Integer): EBTStatus;
+var
+  TimerNode: ^TBTTimerNode;
+begin
+  if Handle.NodeType = EBTNodeType.Cooldown then
+    TimerNode := @Self.CooldownNodes[Handle.Index]
+  else
+    TimerNode := @Self.TimeoutNodes[Handle.Index];
+
+  if Handle.NodeType = EBTNodeType.Cooldown then
+  begin
+    if (TimerNode^.EndTime > 0) and (Time() < TimerNode^.EndTime) then Exit(EBTStatus.Failure);
+    Result := Self._ExecuteNode(TimerNode^.Child, Depth + 1);
+    if Result <> EBTStatus.Running then
+      TimerNode^.EndTime := Time() + TimerNode^.TimerDuration;
+  end else // Timeout
+  begin
+    if TimerNode^.EndTime = 0 then
+      TimerNode^.EndTime := Time() + TimerNode^.TimerDuration;
+    if Time() >= TimerNode^.EndTime then
+    begin
+      TimerNode^.EndTime := 0;
+      Exit(EBTStatus.Failure);
+    end;
+    Result := Self._ExecuteNode(TimerNode^.Child, Depth + 1);
+    if Result <> EBTStatus.Running then
+      TimerNode^.EndTime := 0;
+  end;
+end;
+
+// Executes repeater nodes by looping child execution
+function TBehaviorTree._ExecuteRepeater(Handle: TBTNodeHandle; Depth: Integer): EBTStatus;
+var
+  RepNode: ^TBTRepeaterNode;
+begin
+  RepNode := @Self.RepeaterNodes[Handle.Index];
+  if (RepNode^.RepeatCount > 0) and (RepNode^.State.RepeatCount >= RepNode^.RepeatCount) then
+  begin
+    RepNode^.State.RepeatCount := 0;
+    Exit(EBTStatus.Success);
+  end;
+  case Self._ExecuteNode(RepNode^.Child, Depth + 1) of
+    EBTStatus.Success:
+    begin
+      Inc(RepNode^.State.RepeatCount);
+      if (RepNode^.RepeatCount > 0) and (RepNode^.State.RepeatCount >= RepNode^.RepeatCount) then
+      begin
+        RepNode^.State.RepeatCount := 0;
+        Result := EBTStatus.Success;
+      end else
+        Result := EBTStatus.Running;
+    end;
+    EBTStatus.Failure:
+    begin
+      RepNode^.State.RepeatCount := 0;
+      Result := EBTStatus.Failure;
+    end;
+    EBTStatus.Running: Result := EBTStatus.Running;
+  end;
+end;
+
+// Executes conditional nodes by checking condition before running child
+function TBehaviorTree._ExecuteConditional(Handle: TBTNodeHandle; Depth: Integer): EBTStatus;
+var
+  CondNode: ^TBTConditionalNode;
+begin
+  CondNode := @Self.ConditionalNodes[Handle.Index];
+  if Assigned(@CondNode^.Condition) then
+  begin
+    if CondNode^.Condition() then Result := Self._ExecuteNode(CondNode^.Child, Depth + 1) else Result := EBTStatus.Failure;
+  end else if Assigned(@CondNode^.ConditionMethod) then
+  begin
+    if CondNode^.ConditionMethod() then Result := Self._ExecuteNode(CondNode^.Child, Depth + 1) else Result := EBTStatus.Failure;
+  end else
+    Result := EBTStatus.Failure;
+end;
+
+// Executes subtree nodes by running separate behavior trees
+function TBehaviorTree._ExecuteSubtree(Handle: TBTNodeHandle; Depth: Integer): EBTStatus;
+var
+  SubNode: ^TBTSubtreeNode;
+  Subtree: PBehaviorTree;
+begin
+  SubNode := @Self.SubtreeNodes[Handle.Index];
+  if (SubNode^.SubtreeIndex > -1) and (SubNode^.SubtreeIndex <= High(Self.Subtrees)) then
+  begin
+    Subtree := Self.Subtrees[SubNode^.SubtreeIndex];
+    if Subtree^.Root.Index < 0 then
+    begin
+      Self.SetError(EBTErrorType.NullReference, 'Subtree root node is not set', SubNode^.Base.Name);
+      Result := EBTStatus.Failure;
+    end
+    else
+    begin
+      // Increment depth counter to prevent circular references
+      Inc(Self.CurrentExecutionDepth);
+      if Self.CurrentExecutionDepth >= BT_MAX_RECURSION_DEPTH then
+      begin
+        Self.SetError(EBTErrorType.MaxDepthExceeded, 'Maximum recursion depth exceeded in subtree call', SubNode^.Base.Name);
+        Dec(Self.CurrentExecutionDepth);
+        Result := EBTStatus.Failure;
+      end
+      else
+      begin
+        // Share depth counter with subtree to track total execution depth
+        Subtree^.CurrentExecutionDepth := Self.CurrentExecutionDepth;
+        Result := Subtree^._ExecuteNode(Subtree^.Root, Depth + 1);
+        Self.CurrentExecutionDepth := Subtree^.CurrentExecutionDepth;
+        Dec(Self.CurrentExecutionDepth);
+      end;
+    end;
+  end
+  else
+  begin
+    Self.SetError(EBTErrorType.InvalidSubtree, 'Invalid subtree index: ' + IntToStr(SubNode^.SubtreeIndex), SubNode^.Base.Name);
+    Result := EBTStatus.Failure;
+  end;
+end;
+
+// Executes link nodes by jumping to target node
+function TBehaviorTree._ExecuteLink(Handle: TBTNodeHandle; Depth: Integer): EBTStatus;
+var
+  LinkNode: ^TBTLinkNode;
+begin
+  LinkNode := @Self.LinkNodes[Handle.Index];
+  Result := Self._ExecuteNode(LinkNode^.TargetNode, Depth + 1);
+end; 
+
+(* REACTIVE *)
+
+(*
+## Reactive
+Reactive nodes for behavior trees.
+
+Reactive nodes monitor blackboard changes and interrupt running children.
+Use these for dynamic behavior that needs to respond to changing conditions.
+*)
+
+
+
+(*
+### TBehaviorTree.CreateReactiveSelector
+```pascal
+function TBehaviorTree.CreateReactiveSelector(Name: String; Children: TBTNodeHandleArray = []): TBTNodeHandle;
+```
+Creates a reactive selector that interrupts on blackboard changes.
+
+Example:
+```pascal
+ReactiveSelector := MyTree.CreateReactiveSelector('Reactive Combat', [Health, Combat, Heal]);
+ReactiveSelector := MyTree.CreateReactiveSelector('Empty Reactive'); // Empty reactive selector
+```
+*)
+function TBehaviorTree.CreateReactiveSelector(Name: String; Children: TBTNodeHandleArray = []): TBTNodeHandle;
+var
+  Node: ^TBTReactiveNode;
+  i: Integer;
+begin
+  Node := Self._CreateNode(EBTNodeType.ReactiveSelector, Result.Index);
+  Node^.Base.Name := Name;
+  Node^.Children := Children;
+  Node^.RunningChildIndex := -1;
+  Node^.LastActivityTimestamp := 0;  
+  
+  SetLength(Node^.ConditionCheckMask, Length(Children));
+  SetLength(Node^.LastConditionStates, Length(Children));
+  for i := 0 to High(Children) do
+  begin
+    case Children[i].NodeType of
+        EBTNodeType.Condition, EBTNodeType.BlackboardCondition,
+        EBTNodeType.Selector, EBTNodeType.Sequence,
+        EBTNodeType.ReactiveSelector, EBTNodeType.ReactiveSequence,
+        EBTNodeType.EventCondition:
+            Node^.ConditionCheckMask[i] := True;
+        else
+            Node^.ConditionCheckMask[i] := False;
+    end;
+    Node^.LastConditionStates[i] := EBTStatus.Failure;
+  end;
+  
+  Result.NodeType := EBTNodeType.ReactiveSelector;
+end;
+
+(*
+### TBehaviorTree.CreateReactiveSequence
+```pascal
+function TBehaviorTree.CreateReactiveSequence(Name: String; Children: TBTNodeHandleArray = []): TBTNodeHandle;
+```
+Creates a reactive sequence that interrupts on blackboard changes.
+
+Example:
+```pascal
+ReactiveSequence := MyTree.CreateReactiveSequence('Reactive Combat', [Check, Approach, Attack]);
+ReactiveSequence := MyTree.CreateReactiveSequence('Empty Reactive Seq'); // Empty reactive sequence
+```
+*)
+function TBehaviorTree.CreateReactiveSequence(Name: String; Children: TBTNodeHandleArray = []): TBTNodeHandle;
+var
+  Node: ^TBTReactiveNode;
+  i: Integer;
+begin
+  Node := Self._CreateNode(EBTNodeType.ReactiveSequence, Result.Index);
+  Node^.Base.Name := Name;
+  Node^.Children := Children;
+  Node^.RunningChildIndex := -1;
+  Node^.LastActivityTimestamp := 0;  
+  
+  SetLength(Node^.ConditionCheckMask, Length(Children));
+  SetLength(Node^.LastConditionStates, Length(Children));
+  for i := 0 to High(Children) do
+  begin
+    case Children[i].NodeType of
+        EBTNodeType.Condition, EBTNodeType.BlackboardCondition,
+        EBTNodeType.Selector, EBTNodeType.Sequence,
+        EBTNodeType.ReactiveSelector, EBTNodeType.ReactiveSequence,
+        EBTNodeType.EventCondition:
+            Node^.ConditionCheckMask[i] := True;
+        else
+            Node^.ConditionCheckMask[i] := False;
+    end;
+    Node^.LastConditionStates[i] := EBTStatus.Success;  
+  end;
+  
+  Result.NodeType := EBTNodeType.ReactiveSequence;
+end;
+
+(*
+### TBehaviorTree.CreateDataGatherer
+```pascal
+function TBehaviorTree.CreateDataGatherer(Name: String; BlackboardKey: String; GatherFunc: TBTAction; UpdateIntervalMS: Integer = 1000): TBTNodeHandle;
+```
+Creates a data gatherer that continuously updates blackboard.
+
+Example:
+```pascal
+Gatherer := MyTree.CreateDataGatherer('Enemy Distance', 'EnemyDistance', @GetEnemyDistance, 500);
+```
+*)
+function TBehaviorTree.CreateDataGatherer(Name: String; BlackboardKey: String; GatherFunc: TBTAction; UpdateIntervalMS: Integer = 1000): TBTNodeHandle;
+var
+  Node: ^TBTDataGathererNode;
+begin
+  Node := Self._CreateNode(EBTNodeType.DataGatherer, Result.Index);
+  Node^.Base.Name := Name;
+  Node^.BlackboardKey := BlackboardKey;
+  Node^.GatherFunction := @GatherFunc;
+  Node^.UpdateInterval := UpdateIntervalMS;
+  Node^.LastUpdateTime := 0;
+  Node^.ContinuousUpdate := True;
+  
+  Result.NodeType := EBTNodeType.DataGatherer;
+end;
+
+(*
+### TBehaviorTree.CreateDataGatherer
+```pascal
+function TBehaviorTree.CreateDataGatherer(Name: String; BlackboardKey: String; GatherMethod: TBTActionMethod; UpdateIntervalMS: Integer = 1000): TBTNodeHandle;
+```
+Creates a data gatherer using a method.
+
+Example:
+```pascal
+Gatherer := MyTree.CreateDataGatherer('Health', 'PlayerHealth', @Self.GetPlayerHealth, 250);
+```
+*)
+function TBehaviorTree.CreateDataGatherer(Name: String; BlackboardKey: String; GatherMethod: TBTActionMethod; UpdateIntervalMS: Integer = 1000): TBTNodeHandle; overload;
+var
+  Node: ^TBTDataGathererNode;
+begin
+  Node := Self._CreateNode(EBTNodeType.DataGatherer, Result.Index);
+  Node^.Base.Name := Name;
+  Node^.BlackboardKey := BlackboardKey;
+  Node^.GatherMethod := @GatherMethod;
+  Node^.UpdateInterval := UpdateIntervalMS;
+  Node^.LastUpdateTime := 0;
+  Node^.ContinuousUpdate := True;
+  
+  Result.NodeType := EBTNodeType.DataGatherer;
+end;
+
+// Executes reactive composite nodes with blackboard change interruption
+function TBehaviorTree._ExecuteReactiveComposite(Handle: TBTNodeHandle; Depth: Integer): EBTStatus;
+var
+  ReactiveNode: ^TBTReactiveNode;
+  i, StartIndex: Integer;
+  ChildStatus: EBTStatus;
+  ActivityChanges: array of TBlackboardChange;
+  MustRestart: Boolean;
+  RelevantChanges: Integer;
+  LastTimestamp, CurrentTime: Double;  
+begin
+  if Handle.NodeType = EBTNodeType.ReactiveSelector then
+    ReactiveNode := @Self.ReactiveSelectorNodes[Handle.Index]
+  else
+    ReactiveNode := @Self.ReactiveSequenceNodes[Handle.Index];
+
+  if Length(ReactiveNode^.Children) = 0 then
+  begin
+    if Handle.NodeType = EBTNodeType.ReactiveSelector then Exit(EBTStatus.Failure) else Exit(EBTStatus.Success);
+  end;
+
+  LastTimestamp := ReactiveNode^.LastActivityTimestamp;
+  CurrentTime := PerformanceTime();
+  
+  ActivityChanges := Self.Blackboard.GetActivitySince(LastTimestamp);
+  RelevantChanges := 0;
+  for i := 0 to High(ActivityChanges) do
+    if ActivityChanges[i].ChangeType <> EBBChangeType.Read then
+      Inc(RelevantChanges);
+
+  if Self.DebugLevel >= EBTDebugLevel.Verbose then
+    WriteLn(Format('[REACTIVE] %s: LastTimestamp=%.6f, CurrentTime=%.6f, Found %d total activities, %d relevant changes, RunningChildIndex=%d', 
+      [ReactiveNode^.Base.Name, LastTimestamp, CurrentTime, Length(ActivityChanges), RelevantChanges, ReactiveNode^.RunningChildIndex]));
+
+  MustRestart := (ReactiveNode^.RunningChildIndex > -1) and (RelevantChanges > 0);
+  if MustRestart then
+  begin
+    if Self.DebugLevel >= EBTDebugLevel.Verbose then
+      WriteLn(Format('[REACTIVE] %s: Interrupting running child %d due to blackboard changes', 
+        [ReactiveNode^.Base.Name, ReactiveNode^.RunningChildIndex]));
+    ReactiveNode^.RunningChildIndex := -1;
+  end;
+
+  // Update timestamp after checking activities but before executing children
+  ReactiveNode^.LastActivityTimestamp := CurrentTime;
+
+  // If we weren't interrupted, resume from the running child. Otherwise, start at 0.
+  StartIndex := 0;
+  if ReactiveNode^.RunningChildIndex > -1 then
+    StartIndex := ReactiveNode^.RunningChildIndex;
+    
+  if Handle.NodeType = EBTNodeType.ReactiveSelector then
+  begin
+    for i := StartIndex to High(ReactiveNode^.Children) do
+    begin
+      ChildStatus := Self._ExecuteNode(ReactiveNode^.Children[i], Depth + 1);
+      if ChildStatus <> EBTStatus.Failure then
+      begin
+        if ChildStatus = EBTStatus.Running then ReactiveNode^.RunningChildIndex := i else ReactiveNode^.RunningChildIndex := -1;
+        Exit(ChildStatus);
+      end;
+    end;
+    ReactiveNode^.RunningChildIndex := -1;
+    Result := EBTStatus.Failure;
+  end
+  else // ReactiveSequence
+  begin
+    for i := StartIndex to High(ReactiveNode^.Children) do
+    begin
+      ChildStatus := Self._ExecuteNode(ReactiveNode^.Children[i], Depth + 1);
+      if ChildStatus <> EBTStatus.Success then
+      begin
+        if ChildStatus = EBTStatus.Running then ReactiveNode^.RunningChildIndex := i else ReactiveNode^.RunningChildIndex := -1;
+        Exit(ChildStatus);
+      end;
+    end;
+    ReactiveNode^.RunningChildIndex := -1;
+    Result := EBTStatus.Success;
+  end;
+end;
+
+// Executes data gatherer nodes with timed updates
+function TBehaviorTree._ExecuteDataGatherer(Handle: TBTNodeHandle): EBTStatus;
+var
+  DataNode: ^TBTDataGathererNode;
+  CurrentTime: Double;  
+  GatherResult: EBTStatus;
+  OldValue, NewValue: Variant;
+  ShouldUpdate: Boolean;
+begin
+  DataNode := @Self.DataGathererNodes[Handle.Index];
+  CurrentTime := PerformanceTime();
+  
+  // Check if we should update based on time since last actual update
+  if DataNode^.LastUpdateTime = 0 then
+    ShouldUpdate := True  // First execution - always update
+  else
+    ShouldUpdate := (CurrentTime - DataNode^.LastUpdateTime) >= (DataNode^.UpdateInterval / 1000.0);
+  
+  if ShouldUpdate then
+  begin
+    OldValue := Self.Blackboard.Get(DataNode^.BlackboardKey);
+    if Assigned(@DataNode^.GatherFunction) then
+      GatherResult := DataNode^.GatherFunction()
+    else if Assigned(@DataNode^.GatherMethod) then
+      GatherResult := DataNode^.GatherMethod()
+    else
+    begin
+      Self.SetError(EBTErrorType.InvalidNode, 'Data gatherer has no assigned function', DataNode^.Base.Name);
+      Exit(EBTStatus.Failure);
+    end;
+    if GatherResult = EBTStatus.Failure then
+    begin
+      if Self.DebugLevel >= EBTDebugLevel.Verbose then
+        WriteLn(Format('[DATA] Failed to gather data for "%s"', [DataNode^.BlackboardKey]));
+      Exit(EBTStatus.Failure);
+    end;
+    
+    // Update timestamp AFTER successful gather function call
+    DataNode^.LastUpdateTime := CurrentTime;
+    
+    NewValue := Self.Blackboard.Get(DataNode^.BlackboardKey);
+    if Self.DebugLevel >= EBTDebugLevel.Verbose then
+    begin
+      if OldValue <> NewValue then
+        WriteLn(Format('[DATA] Updated "%s": %s -> %s', [DataNode^.BlackboardKey, ToStr(OldValue), ToStr(NewValue)]))
+      else
+        WriteLn(Format('[DATA] Refreshed "%s": %s', [DataNode^.BlackboardKey, ToStr(NewValue)]));
+    end;
+  end;
+  if DataNode^.ContinuousUpdate then
+    Result := EBTStatus.Running
+  else
+    Result := EBTStatus.Success;
+end; 
+
+(* UTILITIES *)
+
+(*
+## Utilities
+Utility nodes for behavior trees.
+
+Repeat loops, delays, static results, and probability-based decisions.
+*)
+
+
+
+(*
+### TBehaviorTree.CreateRepeatUntilSuccess
+```pascal
+function TBehaviorTree.CreateRepeatUntilSuccess(Name: String; Child: TBTNodeHandle; MaxTries: Integer = -1): TBTNodeHandle;
+```
+Repeats a child until it succeeds. MaxTries limits the number of attempts (-1 = unlimited).
+
+Examples:
+```pascal
+// Retry opening a door up to 3 times
+RetryAction := MyTree.CreateRepeatUntilSuccess('Retry Open Door', OpenDoorAction, 3);
+
+// Retry indefinitely until success
+RetryAction := MyTree.CreateRepeatUntilSuccess('Retry Open Door', OpenDoorAction);
+
+// Fail immediately (useful for testing)
+RetryAction := MyTree.CreateRepeatUntilSuccess('Retry Open Door', OpenDoorAction, 0);
+```
+*)
+function TBehaviorTree.CreateRepeatUntilSuccess(Name: String; Child: TBTNodeHandle; MaxTries: Integer = -1): TBTNodeHandle;
+var
+  Node: ^TBTRepeatUntilNode;
+begin
+  // Validate MaxTries parameter
+  if MaxTries < -1 then
+    MaxTries := -1;
+  
+  Node := Self._CreateNode(EBTNodeType.RepeatUntilSuccess, Result.Index);
+  Node^.Base.Name := Name;
+  Node^.Child := Child;
+  Node^.RepeatUntilSuccess := True;
+  Node^.MaxTries := MaxTries;
+  Node^.CurrentTries := 0;
+  Result.NodeType := EBTNodeType.RepeatUntilSuccess;
+end;
+
+(*
+### TBehaviorTree.CreateRepeatUntilFailure
+```pascal
+function TBehaviorTree.CreateRepeatUntilFailure(Name: String; Child: TBTNodeHandle; MaxTries: Integer = -1): TBTNodeHandle;
+```
+Repeats a child until it fails. MaxTries limits the number of attempts (-1 = unlimited).
+
+Examples:
+```pascal
+// Patrol until interrupted (up to 10 times)
+ContinuousPatrol := MyTree.CreateRepeatUntilFailure('Continuous Patrol', PatrolAction, 10);
+
+// Patrol indefinitely until failure
+ContinuousPatrol := MyTree.CreateRepeatUntilFailure('Continuous Patrol', PatrolAction);
+
+// Stop immediately (useful for testing)
+ContinuousPatrol := MyTree.CreateRepeatUntilFailure('Continuous Patrol', PatrolAction, 0);
+```
+*)
+function TBehaviorTree.CreateRepeatUntilFailure(Name: String; Child: TBTNodeHandle; MaxTries: Integer = -1): TBTNodeHandle;
+var
+  Node: ^TBTRepeatUntilNode;
+begin
+  // Validate MaxTries parameter
+  if MaxTries < -1 then
+    MaxTries := -1;
+  
+  Node := Self._CreateNode(EBTNodeType.RepeatUntilFailure, Result.Index);
+  Node^.Base.Name := Name;
+  Node^.Child := Child;
+  Node^.RepeatUntilSuccess := False;
+  Node^.MaxTries := MaxTries;
+  Node^.CurrentTries := 0;
+  Result.NodeType := EBTNodeType.RepeatUntilFailure;
+end;
+
+(*
+### TBehaviorTree.CreateDelay
+```pascal
+function TBehaviorTree.CreateDelay(Name: String; DelayMS: Integer): TBTNodeHandle;
+```
+Creates a delay that waits for a specified time.
+
+Example:
+```pascal
+Wait := MyTree.CreateDelay('Wait 2 Seconds', 2000);
+```
+*)
+function TBehaviorTree.CreateDelay(Name: String; DelayMS: Integer): TBTNodeHandle;
+var
+  Node: ^TBTDelayNode;
+begin
+  Node := Self._CreateNode(EBTNodeType.Delay, Result.Index);
+  Node^.Base.Name := Name;
+  Node^.DelayMS := DelayMS;
+  Node^.StartTime := 0;
+  Result.NodeType := EBTNodeType.Delay;
+end;
+
+(*
+### TBehaviorTree.CreateSuccess
+```pascal
+function TBehaviorTree.CreateSuccess(Name: String): TBTNodeHandle;
+```
+Creates a node that always succeeds.
+
+Example:
+```pascal
+Fallback := MyTree.CreateSuccess('Always Succeed');
+```
+*)
+function TBehaviorTree.CreateSuccess(Name: String): TBTNodeHandle;
+var
+  Node: ^TBTStaticConditionNode;
+begin
+  Node := Self._CreateNode(EBTNodeType.Success, Result.Index);
+  Node^.Base.Name := Name;
+  Result.NodeType := EBTNodeType.Success;
+end;
+
+(*
+### TBehaviorTree.CreateFailure
+```pascal
+function TBehaviorTree.CreateFailure(Name: String): TBTNodeHandle;
+```
+Creates a node that always fails.
+
+Example:
+```pascal
+BlockedAction := MyTree.CreateFailure('Blocked Action');
+```
+*)
+function TBehaviorTree.CreateFailure(Name: String): TBTNodeHandle;
+var
+  Node: ^TBTStaticConditionNode;
+begin
+  Node := Self._CreateNode(EBTNodeType.Failure, Result.Index);
+  Node^.Base.Name := Name;
+  Result.NodeType := EBTNodeType.Failure;
+end;
+
+(*
+### TBehaviorTree.CreateRunning
+```pascal
+function TBehaviorTree.CreateRunning(Name: String): TBTNodeHandle;
+```
+Creates a node that always returns running.
+
+Example:
+```pascal
+LongTask := MyTree.CreateRunning('Long Running Task');
+```
+*)
+function TBehaviorTree.CreateRunning(Name: String): TBTNodeHandle;
+var
+  Node: ^TBTStaticConditionNode;
+begin
+  Node := Self._CreateNode(EBTNodeType.Running, Result.Index);
+  Node^.Base.Name := Name;
+  Result.NodeType := EBTNodeType.Running;
+end;
+
+(*
+### TBehaviorTree.CreateProbability
+```pascal
+function TBehaviorTree.CreateProbability(Name: String; SuccessChance: Single): TBTNodeHandle;
+```
+Creates a node that succeeds based on random chance.
+
+Example:
+```pascal
+// 30% chance of success
+CritChance := MyTree.CreateProbability('Critical Hit', 0.3);
+```
+*)
+function TBehaviorTree.CreateProbability(Name: String; SuccessChance: Single): TBTNodeHandle;
+var
+  Node: ^TBTProbabilityNode;
+begin
+  Node := Self._CreateNode(EBTNodeType.Probability, Result.Index);
+  Node^.Base.Name := Name;
+  Node^.SuccessChance := SuccessChance;
+  Result.NodeType := EBTNodeType.Probability;
+end;
+
+// Executes repeat until nodes - continues until target condition is met
+function TBehaviorTree._ExecuteRepeatUntil(Handle: TBTNodeHandle; Depth: Integer): EBTStatus;
+var
+  RepeatNode: ^TBTRepeatUntilNode;
+  ChildStatus: EBTStatus;
+begin
+  RepeatNode := @Self.RepeatUntilNodes[Handle.Index];
+  
+  // If MaxTries = 0, fail immediately without executing child
+  if RepeatNode^.MaxTries = 0 then
+  begin
+    if Self.DebugLevel >= EBTDebugLevel.Normal then
+    begin
+      if RepeatNode^.RepeatUntilSuccess then
+        WriteLn(Format('[BT] RepeatUntilSuccess "%s" failed immediately (MaxTries = 0)', [RepeatNode^.Base.Name]))
+      else
+        WriteLn(Format('[BT] RepeatUntilFailure "%s" failed immediately (MaxTries = 0)', [RepeatNode^.Base.Name]));
+    end;
+    Exit(EBTStatus.Failure);
+  end;
+  
+  ChildStatus := Self._ExecuteNode(RepeatNode^.Child, Depth + 1);
+  
+  if RepeatNode^.RepeatUntilSuccess then
+  begin
+    // RepeatUntilSuccess: continue running until child succeeds
+    case ChildStatus of
+      EBTStatus.Success: 
+      begin
+        Result := EBTStatus.Success;
+        RepeatNode^.CurrentTries := 0; // Reset counter on success
+      end;
+      EBTStatus.Failure: 
+      begin
+        Inc(RepeatNode^.CurrentTries);
+        // Check if we've exceeded max tries after incrementing
+        if (RepeatNode^.MaxTries > 0) and (RepeatNode^.CurrentTries >= RepeatNode^.MaxTries) then
+        begin
+          if Self.DebugLevel >= EBTDebugLevel.Normal then
+            WriteLn(Format('[BT] RepeatUntilSuccess "%s" exceeded MaxTries (%d)', 
+              [RepeatNode^.Base.Name, RepeatNode^.MaxTries]));
+          Result := EBTStatus.Failure;
+        end
+        else
+          Result := EBTStatus.Running;
+      end;
+      EBTStatus.Running: Result := EBTStatus.Running;
+    end;
+  end
+  else
+  begin
+    // RepeatUntilFailure: continue running until child fails
+    case ChildStatus of
+      EBTStatus.Success: 
+      begin
+        Inc(RepeatNode^.CurrentTries);
+        // Check if we've exceeded max tries after incrementing
+        if (RepeatNode^.MaxTries > 0) and (RepeatNode^.CurrentTries >= RepeatNode^.MaxTries) then
+        begin
+          if Self.DebugLevel >= EBTDebugLevel.Normal then
+            WriteLn(Format('[BT] RepeatUntilFailure "%s" exceeded MaxTries (%d)', 
+              [RepeatNode^.Base.Name, RepeatNode^.MaxTries]));
+          Result := EBTStatus.Failure;
+        end
+        else
+          Result := EBTStatus.Running;
+      end;
+      EBTStatus.Failure: 
+      begin
+        Result := EBTStatus.Success;
+        RepeatNode^.CurrentTries := 0; // Reset counter on success
+      end;
+      EBTStatus.Running: Result := EBTStatus.Running;
+    end;
+  end;
+end;
+
+// Executes delay nodes - waits for specified time before succeeding
+function TBehaviorTree._ExecuteDelay(Handle: TBTNodeHandle): EBTStatus;
+var
+  DelayNode: ^TBTDelayNode;
+  CurrentTime: Int64;
+begin
+  DelayNode := @Self.DelayNodes[Handle.Index];
+  CurrentTime := Time();
+  
+  if DelayNode^.StartTime = 0 then
+  begin
+    DelayNode^.StartTime := CurrentTime;
+    Result := EBTStatus.Running;
+  end
+  else if (CurrentTime - DelayNode^.StartTime) >= DelayNode^.DelayMS then
+  begin
+    DelayNode^.StartTime := 0;
+    Result := EBTStatus.Success;
+  end
+  else
+  begin
+    Result := EBTStatus.Running;
+  end;
+end;
+
+// Executes static condition nodes - returns fixed result
+function TBehaviorTree._ExecuteStaticCondition(Handle: TBTNodeHandle): EBTStatus;
+var
+  StaticNode: ^TBTStaticConditionNode;
+begin
+  StaticNode := @Self.StaticConditionNodes[Handle.Index];
+  Result := StaticNode^.StaticResult;
+end;
+
+// Executes probability nodes - returns success/failure based on random chance
+function TBehaviorTree._ExecuteProbability(Handle: TBTNodeHandle): EBTStatus;
+var
+  ProbNode: ^TBTProbabilityNode;
+begin
+  ProbNode := @Self.ProbabilityNodes[Handle.Index];
+  if Random() <= ProbNode^.SuccessChance then
+    Result := EBTStatus.Success
+  else
+    Result := EBTStatus.Failure;
+end;
+
+(*
+### TBehaviorTree.GetRemainingTries
+```pascal
+function TBehaviorTree.GetRemainingTries(Handle: TBTNodeHandle): Integer;
+```
+Returns remaining tries for a RepeatUntil node. Returns -1 for unlimited.
+
+Example:
+```pascal
+Remaining := MyTree.GetRemainingTries(RetryNode);
+if Remaining > 0 then
+  WriteLn('Attempts remaining: ', Remaining);
+```
+*)
+function TBehaviorTree.GetRemainingTries(Handle: TBTNodeHandle): Integer;
+var
+  RepeatNode: ^TBTRepeatUntilNode;
+begin
+  if Handle.NodeType in [EBTNodeType.RepeatUntilSuccess, EBTNodeType.RepeatUntilFailure] then
+  begin
+    RepeatNode := @Self.RepeatUntilNodes[Handle.Index];
+    if RepeatNode^.MaxTries <= 0 then
+      Result := -1 // Unlimited
+    else
+      Result := RepeatNode^.MaxTries - RepeatNode^.CurrentTries;
+  end
+  else
+    Result := 0;
+end; 
+
+(* FEATURES *)
+
+(*
+## Features
+Behavior tree features including event system and debugging tools.
+
+These features provide specialized functionality for complex behavior trees.
+Use basic blackboard operations for most communication needs.
+*)
+
+
+(*
+### CreateWaitForEvent
+```pascal
+function TBehaviorTree.CreateWaitForEvent(Name: String; EventName: String): TBTNodeHandle;
+```
+Creates a node that waits for a specific event.
+
+Example:
+```pascal
+CombatTrigger := Tree.CreateWaitForEvent('WaitForCombat', 'player_entered_combat');
+```
+*)
+function TBehaviorTree.CreateWaitForEvent(Name: String; EventName: String): TBTNodeHandle;
+var
+  Node: ^TBTWaitForEventNode;
+begin
+  Node := Self._CreateNode(EBTNodeType.WaitForEvent, Result.Index);
+  Node^.Base.Name := Name;
+  Node^.EventName := EventName;
+  Node^.IsListening := False;
+  Node^.EventReceived := False;
+  Result.NodeType := EBTNodeType.WaitForEvent;
+end;
+
+(*
+### CreateBroadcastEvent
+```pascal
+function TBehaviorTree.CreateBroadcastEvent(Name: String; EventName: String; Data: Variant): TBTNodeHandle;
+```
+Creates a node that broadcasts an event.
+
+Example:
+```pascal
+HealthBroadcast := Tree.CreateBroadcastEvent('HealthAlert', 'health_changed', CurrentHealth);
+```
+*)
+function TBehaviorTree.CreateBroadcastEvent(Name: String; EventName: String; Data: Variant): TBTNodeHandle;
+var
+  Node: ^TBTBroadcastEventNode;
+begin
+  Node := Self._CreateNode(EBTNodeType.BroadcastEvent, Result.Index);
+  Node^.Base.Name := Name;
+  Node^.EventName := EventName;
+  Node^.EventData := Data;
+  Result.NodeType := EBTNodeType.BroadcastEvent;
+end;
+
+(*
+### CreateEventCondition
+```pascal
+function TBehaviorTree.CreateEventCondition(Name: String; EventName: String; ConsumeEvent: Boolean = False): TBTNodeHandle;
+```
+Creates a condition that checks if an event occurred.
+
+Example:
+```pascal
+EnemySpotted := Tree.CreateEventCondition('CheckEnemySpotted', 'enemy_spotted');
+```
+*)
+function TBehaviorTree.CreateEventCondition(Name: String; EventName: String; ConsumeEvent: Boolean = False): TBTNodeHandle;
+var
+  Node: ^TBTEventConditionNode;
+begin
+  Node := Self._CreateNode(EBTNodeType.EventCondition, Result.Index);
+  Node^.Base.Name := Name;
+  Node^.EventName := EventName;
+  Node^.ConsumeEvent := ConsumeEvent;
+  Result.NodeType := EBTNodeType.EventCondition;
+end;
+
+// Internal event node execution methods
+function TBehaviorTree._ExecuteWaitForEvent(Handle: TBTNodeHandle): EBTStatus;
+var
+  EventNode: ^TBTWaitForEventNode;
+begin
+  EventNode := @Self.WaitForEventNodes[Handle.Index];
+  
+  if not EventNode^.IsListening then
+  begin
+    if Self.DebugLevel in [EBTDebugLevel.Normal, EBTDebugLevel.Verbose] then
+      WriteLn(Format('[EVENT] %s is now listening for "%s" event...', [EventNode^.Base.Name, EventNode^.EventName]));
+    EventNode^.IsListening := True;
+    EventNode^.EventReceived := False;
+  end;
+  
+  // Always check if the event has occurred while listening
+  if Self.HasEventOccurred(EventNode^.EventName) then
+  begin
+    if not EventNode^.EventReceived then // To avoid spamming logs
+    begin
+        if Self.DebugLevel in [EBTDebugLevel.Normal, EBTDebugLevel.Verbose] then
+            WriteLn(Format('[EVENT] %s found "%s" event in blackboard!', [EventNode^.Base.Name, EventNode^.EventName]));
+        EventNode^.EventReceived := True;
+        EventNode^.EventData := Self.Blackboard.Get(EventNode^.EventName);
+    end;
+  end;
+  
+  if EventNode^.EventReceived then
+  begin
+    if Self.DebugLevel in [EBTDebugLevel.Normal, EBTDebugLevel.Verbose] then
+      WriteLn(Format('[EVENT] %s received "%s" event! Resuming behavior.', [EventNode^.Base.Name, EventNode^.EventName]));
+    EventNode^.IsListening := False;
+    EventNode^.EventReceived := False;
+    Result := EBTStatus.Success;
+  end
+  else
+  begin
+    Result := EBTStatus.Running;
+  end;
+end;
+
+function TBehaviorTree._ExecuteBroadcastEvent(Handle: TBTNodeHandle): EBTStatus;
+var
+  EventNode: ^TBTBroadcastEventNode;
+begin
+  EventNode := @Self.BroadcastEventNodes[Handle.Index];
+  
+  if Self.DebugLevel in [EBTDebugLevel.Normal, EBTDebugLevel.Verbose] then
+    WriteLn(Format('[EVENT] %s broadcasting "%s" event with data: %s', [EventNode^.Base.Name, EventNode^.EventName, ToStr(EventNode^.EventData)]));
+    
+  Self.BroadcastEvent(EventNode^.EventName, EventNode^.EventData);
+  Result := EBTStatus.Success;
+end;
+
+function TBehaviorTree._ExecuteEventCondition(Handle: TBTNodeHandle): EBTStatus;
+var
+  EventNode: ^TBTEventConditionNode;
+  EventKey: String;
+begin
+  EventNode := @Self.EventConditionNodes[Handle.Index];
+  EventKey := EventNode^.EventName;  
+  
+  if Self.Blackboard.HasKey(EventKey) then
+  begin
+    if EventNode^.ConsumeEvent then
+    begin
+      Self.Blackboard.RemoveKey(EventKey);  
+    end;
+    Result := EBTStatus.Success;
+  end
+  else
+    Result := EBTStatus.Failure;
+end;
+
+// Internal state change notification
+procedure TBehaviorTree._EmitStateChanged();
+begin
+  // Signal that the behavior tree state has changed
+  Self.Blackboard.Put('_bt_state_changed', True);
+  Self.Blackboard.Put('_bt_event_counter', Self.Blackboard.Get('_bt_event_counter', 0) + 1);
+end;
+
+(*
+### TriggerEvent
+```pascal
+procedure TBehaviorTree.TriggerEvent(EventName: String; Data: Variant);
+```
+Triggers an event with data.
+
+Example:
+```pascal
+Tree.TriggerEvent('player_entered_combat', True);
+```
+*)
+procedure TBehaviorTree.TriggerEvent(EventName: String; Data: Variant);
+begin
+  Self.Blackboard.Put(EventName, Data);
+  Self._EmitStateChanged();
+end;
+
+(*
+### TriggerPriorityEvent
+```pascal
+procedure TBehaviorTree.TriggerPriorityEvent(EventName: String; Data: Variant);
+```
+Triggers a priority event that interrupts current behavior.
+
+Example:
+```pascal
+Tree.TriggerPriorityEvent('taking_damage', DamageAmount);
+```
+*)
+procedure TBehaviorTree.TriggerPriorityEvent(EventName: String; Data: Variant);
+begin
+  Self.TriggerEvent(EventName, Data);
+  Self.InterruptRequested := True;
+  Self.InterruptReason := EventName;
+end;
+
+(*
+### ConsumeEvent
+```pascal
+function TBehaviorTree.ConsumeEvent(EventName: String): Variant;
+```
+Retrieves and removes an event.
+
+Example:
+```pascal
+LootData := Tree.ConsumeEvent('loot_available');
+```
+*)
+function TBehaviorTree.ConsumeEvent(EventName: String): Variant;
+begin
+  if Self.Blackboard.HasKey(EventName) then
+  begin
+    Result := Self.Blackboard.Get(EventName);
+    Self.Blackboard.RemoveKey(EventName);
+  end else
+    Result := nil;
+end;
+
+(*
+### BroadcastEvent
+```pascal
+procedure TBehaviorTree.BroadcastEvent(EventName: String; Data: Variant);
+```
+Broadcasts an event (alias for TriggerEvent).
+
+Example:
+```pascal
+Tree.BroadcastEvent('objective_completed', ObjectiveId);
+```
+*)
+procedure TBehaviorTree.BroadcastEvent(EventName: String; Data: Variant);
+begin
+  Self.TriggerEvent(EventName, Data);
+end;
+
+(*
+### HasEventOccurred
+```pascal
+function TBehaviorTree.HasEventOccurred(EventName: String): Boolean;
+```
+Checks if an event occurred without consuming it.
+
+Example:
+```pascal
+if Tree.HasEventOccurred('combat_ended') then
+  WriteLn('Combat ended');
+```
+*)
+function TBehaviorTree.HasEventOccurred(EventName: String): Boolean;
+begin
+  Result := Self.Blackboard.HasKey(EventName);
+end;
+
+// Internal error handling with enhanced context
+procedure TBehaviorTree.SetError(ErrorType: EBTErrorType; Message: String; NodeName: String);
+var
+  FullMessage, EnhancedMessage: String;
+  KeyList: TStringArray;
+  i: Integer;
+begin
+  Self.LastError.ErrorType := ErrorType;
+  Self.LastError.NodeName := NodeName;
+  Self.LastError.Timestamp := Time();
+  
+  EnhancedMessage := Message;
+  
+  case ErrorType of
+    EBTErrorType.BlackboardError:
+      begin
+        EnhancedMessage := Message;
+        KeyList := Self.Blackboard.GetKeys();
+        if Length(KeyList) > 0 then
+        begin
+          EnhancedMessage := EnhancedMessage + '. Available keys: ';
+          for i := 0 to High(KeyList) do
+          begin
+            if i > 0 then EnhancedMessage := EnhancedMessage + ', ';
+            EnhancedMessage := EnhancedMessage + KeyList[i].ToUpper();
+          end;
+        end;
+      end;
+    // Other error types use the message as-is for clean, concise output
+  end;
+  
+  if NodeName <> '' then
+    FullMessage := Format('%s (Node: "%s")', [EnhancedMessage, NodeName])
+  else
+    FullMessage := EnhancedMessage;
+  
+  Self.LastError.Message := FullMessage;
+  
+  if Self.DebugLevel <> EBTDebugLevel.Silent then
+  begin
+    WriteLn(Format('[BT ERROR] %s', [FullMessage]));
+  end;
+  
+  // Store in error history
+  if Length(Self.ErrorHistory) >= 50 then
+  begin
+    Move(Self.ErrorHistory[1], Self.ErrorHistory[0], (Length(Self.ErrorHistory) - 1) * SizeOf(TBTError));
+    Self.ErrorHistory[High(Self.ErrorHistory)] := Self.LastError;
+  end else
+  begin
+    SetLength(Self.ErrorHistory, Length(Self.ErrorHistory) + 1);
+    Self.ErrorHistory[High(Self.ErrorHistory)] := Self.LastError;
+  end;
+end;
+
+(*
+### GetLastError
+```pascal
+function TBehaviorTree.GetLastError(): TBTError;
+```
+Gets the most recent error.
+
+Example:
+```pascal
+Error := Tree.GetLastError();
+```
+*)
+function TBehaviorTree.GetLastError(): TBTError;
+begin
+  Result := Self.LastError;
+end;
+
+(*
+### ClearErrors
+```pascal
+procedure TBehaviorTree.ClearErrors();
+```
+Clears all errors.
+
+Example:
+```pascal
+Tree.ClearErrors();
+```
+*)
+procedure TBehaviorTree.ClearErrors();
+begin
+  Self.LastError.ErrorType := EBTErrorType.None;
+  Self.LastError.Message := '';
+  Self.LastError.NodeName := '';
+  SetLength(Self.ErrorHistory, 0);
+end;
+
+(*
+### HasErrors
+```pascal
+function TBehaviorTree.HasErrors(): Boolean;
+```
+Checks if any errors occurred.
+
+Example:
+```pascal
+if Tree.HasErrors() then
+  HandleErrors();
+```
+*)
+function TBehaviorTree.HasErrors(): Boolean;
+begin
+  Result := Self.LastError.ErrorType <> EBTErrorType.None;
+end;
+
+// Internal execution tracing
+procedure TBehaviorTree._AddTraceEntry(NodePath: String; NodeName: String; Status: EBTStatus; ExecutionTime: Double; Depth: Integer);
+begin
+  if Self.DebugLevel <> EBTDebugLevel.Verbose then Exit;
+  if Length(Self.ExecutionTrace) >= Self.MaxTraceSize then
+  begin
+    Move(Self.ExecutionTrace[1], Self.ExecutionTrace[0], (Length(Self.ExecutionTrace) - 1) * SizeOf(TBTExecutionTrace));
+    Self.ExecutionTrace[High(Self.ExecutionTrace)].NodePath := NodePath;
+    Self.ExecutionTrace[High(Self.ExecutionTrace)].NodeName := NodeName;
+    Self.ExecutionTrace[High(Self.ExecutionTrace)].Status := Status;
+    Self.ExecutionTrace[High(Self.ExecutionTrace)].ExecutionTime := ExecutionTime;
+    Self.ExecutionTrace[High(Self.ExecutionTrace)].Depth := Depth;
+    Self.ExecutionTrace[High(Self.ExecutionTrace)].Timestamp := Time();
+  end else
+  begin
+    SetLength(Self.ExecutionTrace, Length(Self.ExecutionTrace) + 1);
+    Self.ExecutionTrace[High(Self.ExecutionTrace)].NodePath := NodePath;
+    Self.ExecutionTrace[High(Self.ExecutionTrace)].NodeName := NodeName;
+    Self.ExecutionTrace[High(Self.ExecutionTrace)].Status := Status;
+    Self.ExecutionTrace[High(Self.ExecutionTrace)].ExecutionTime := ExecutionTime;
+    Self.ExecutionTrace[High(Self.ExecutionTrace)].Depth := Depth;
+    Self.ExecutionTrace[High(Self.ExecutionTrace)].Timestamp := Time();
+  end;
+end;
+
+(*
+### TBehaviorTree.GetExecutionTrace
+```pascal
+function TBehaviorTree.GetExecutionTrace(): array of TBTExecutionTrace;
+```
+Gets execution trace for debugging (requires verbose debug level).
+
+Example:
+```pascal
+Tree.SetDebugLevel(EBTDebugLevel.Verbose);
+Tree.Tick();
+Trace := Tree.GetExecutionTrace();
+```
+*)
+function TBehaviorTree.GetExecutionTrace(): array of TBTExecutionTrace;
+begin
+  Result := Copy(Self.ExecutionTrace);
+end;
+
+(*
+### TBehaviorTree.ClearTrace
+```pascal
+procedure TBehaviorTree.ClearTrace();
+```
+Clears the execution trace history.
+
+Example:
+```pascal
+Tree.ClearTrace();
+```
+*)
+procedure TBehaviorTree.ClearTrace();
+begin
+  SetLength(Self.ExecutionTrace, 0);
+end;
+
+// Internal node structure printing
+procedure TBehaviorTree._PrintNode(Handle: TBTNodeHandle; Depth: Integer);
+var
+  i: Integer;
+  TypeStr, Name: String;
+  NodeBase: ^TBTNodeBase;
+  Children: PBTNodeHandleArray;
+  SingleChild: TBTNodeHandle;
+begin
+  NodeBase := Self._GetNodeBase(Handle);
+  if NodeBase = nil then Exit;
+
+  Name := NodeBase^.Name;
+  TypeStr := ToStr(Handle.NodeType).After('EBTNodeType.').ToUpper();
+
+  if Handle.NodeType = EBTNodeType.Subtree then
+  begin
+    // Special handling for Subtree to print its name
+  end
+  else
+  begin
+    Self.Lock.Enter();
+    try
+      WriteLn(Format('%s%s "%s"', [''.PadLeft(Depth * 2), TypeStr, Name]));
+    finally
+      Self.Lock.Leave();
+    end;
+  end;
+
+  Children := Self._GetNodeChildren(Handle);
+  if Children <> nil then
+    for i := 0 to High(Children^) do
+      Self._PrintNode(Children^[i], Depth + 1);
+
+  SingleChild := Self._GetNodeChild(Handle);
+  if SingleChild.Index >= 0 then
+    Self._PrintNode(SingleChild, Depth + 1);
+end;
+
+(*
+### PrintStructure
+```pascal
+procedure TBehaviorTree.PrintStructure();
+```
+Prints the tree structure for debugging.
+
+Example:
+```pascal
+Tree.PrintStructure();
+```
+*)
+procedure TBehaviorTree.PrintStructure();
+begin
+  Self.Lock.Enter();
+  try
+    WriteLn(Format('--- Tree Structure: %s ---', [Self.Name]));
+    if Self.Root.Index >= 0 then
+      Self._PrintNode(Self.Root, 0);
+    WriteLn(''.PadLeft(30, '-'));
+  finally
+    Self.Lock.Leave();
+  end;
+end;
+
+(*
+### ValidateTree
+```pascal
+procedure TBehaviorTree.ValidateTree();
+```
+Validates the tree structure for issues.
+
+Example:
+```pascal
+Tree.ValidateTree();
+```
+*)
+procedure TBehaviorTree.ValidateTree();
+var
+  VisitedSubtrees: array of Integer;
+
+  procedure ValidateHandle(Handle: TBTNodeHandle; NodeName: String);
+  begin
+    if Handle.Index < 0 then
+      raise Format('[BT ERROR] Invalid handle in "%s": Index < 0', [NodeName]);
+    
+    case Handle.NodeType of
+      EBTNodeType.Action: if Handle.Index >= Length(Self.ActionNodes) then raise Format('[BT ERROR] Invalid Action handle in "%s"', [NodeName]);
+      EBTNodeType.Selector: if Handle.Index >= Length(Self.SelectorNodes) then raise Format('[BT ERROR] Invalid Selector handle in "%s"', [NodeName]);
+      EBTNodeType.Sequence: if Handle.Index >= Length(Self.SequenceNodes) then raise Format('[BT ERROR] Invalid Sequence handle in "%s"', [NodeName]);
+      EBTNodeType.Subtree: if Handle.Index >= Length(Self.SubtreeNodes) then raise Format('[BT ERROR] Invalid Subtree handle in "%s"', [NodeName]);
+    end;
+  end;
+
+  procedure ValidateSubtreeCircular(SubtreeIndex: Integer);
+  var
+    i: Integer;
+  begin
+    for i := 0 to High(VisitedSubtrees) do
+      if VisitedSubtrees[i] = SubtreeIndex then
+        raise Format('[BT ERROR] Circular reference detected in subtree %d', [SubtreeIndex]);
+    
+    SetLength(VisitedSubtrees, Length(VisitedSubtrees) + 1);
+    VisitedSubtrees[High(VisitedSubtrees)] := SubtreeIndex;
+  end;
+
+  procedure ValidateComposite(Handle: TBTNodeHandle);
+  var
+    Children: PBTNodeHandleArray;
+  begin
+    Children := Self._GetNodeChildren(Handle);
+    if (Children <> nil) and (Length(Children^) = 0) then
+      raise Format('[BT ERROR] Empty composite "%s" has no children', [Self._GetNodeName(Handle)]);
+  end;
+
+var
+  i: Integer;
+  Handle: TBTNodeHandle;
+begin
+  SetLength(VisitedSubtrees, 0);
+  
+  if Self.Root.Index < 0 then
+    raise '[BT ERROR] No root node set';
+  
+  ValidateHandle(Self.Root, 'Root');
+  
+  for i := 0 to High(Self.SubtreeNodes) do
+  begin
+    if (Self.SubtreeNodes[i].SubtreeIndex >= 0) and (Self.SubtreeNodes[i].SubtreeIndex < Length(Self.Subtrees)) then
+      ValidateSubtreeCircular(Self.SubtreeNodes[i].SubtreeIndex)
+    else if Self.SubtreeNodes[i].SubtreeIndex >= Length(Self.Subtrees) then
+      raise Format('[BT ERROR] Subtree index %d out of bounds', [Self.SubtreeNodes[i].SubtreeIndex]);
+  end;
+  
+  for i := 0 to High(Self.SelectorNodes) do
+  begin
+    Handle.Index := i;
+    Handle.NodeType := EBTNodeType.Selector;
+    ValidateComposite(Handle);
+  end;
+  
+  for i := 0 to High(Self.SequenceNodes) do
+  begin
+    Handle.Index := i;
+    Handle.NodeType := EBTNodeType.Sequence;
+    ValidateComposite(Handle);
+  end;
+end;
+
+(*
+### TBehaviorTree.GenerateProfileReport
+```pascal
+function TBehaviorTree.GenerateProfileReport(): array of TBTNodeProfile;
+```
+Generates a performance report for all nodes (requires verbose debug level).
+
+Example:
+```pascal
+Tree.SetDebugLevel(EBTDebugLevel.Verbose);
+Tree.Tick();
+Report := Tree.GenerateProfileReport();
+```
+*)
+function TBehaviorTree.GenerateProfileReport(): array of TBTNodeProfile;
+type
+  PBTNodeProfile = ^TBTNodeProfile;
+var
+  i, j: Integer;
+  Trace: TBTExecutionTrace;
+  Profile: PBTNodeProfile;
+  Found: Boolean;
+begin
+  if Length(Self.ExecutionTrace) = 0 then
+  begin
+    if Self.DebugLevel <> EBTDebugLevel.Verbose then
+      WriteLn('[BT PROFILE] Profiling is disabled. Use SetDebugLevel(EBTDebugLevel.Verbose) to enable.')
+    else
+      WriteLn('[BT PROFILE] No execution trace available to generate a report.');
+    Exit([]);
+  end;
+  SetLength(Result, 0);
+  for i := 0 to High(Self.ExecutionTrace) do
+  begin
+    Trace := Self.ExecutionTrace[i];
+    Found := False;
+    for j := 0 to High(Result) do
+    begin
+      if Result[j].NodeName = Trace.NodeName then
+      begin
+        Profile := @Result[j];
+        Found := True;
+        Break;
+      end;
+    end;
+    if not Found then
+    begin
+      SetLength(Result, Length(Result) + 1);
+      Profile := @Result[High(Result)];
+      Profile^.NodeName := Trace.NodeName;
+      Profile^.MinTimeMS := -1;
+    end;
+    Inc(Profile^.ExecutionCount);
+    Profile^.TotalTimeMS := Profile^.TotalTimeMS + Trace.ExecutionTime;
+    if (Profile^.MinTimeMS = -1) or (Trace.ExecutionTime < Profile^.MinTimeMS) then
+      Profile^.MinTimeMS := Trace.ExecutionTime;
+    if Trace.ExecutionTime > Profile^.MaxTimeMS then
+      Profile^.MaxTimeMS := Trace.ExecutionTime;
+    case Trace.Status of
+      EBTStatus.Success: Inc(Profile^.SuccessCount);
+      EBTStatus.Failure: Inc(Profile^.FailureCount);
+      EBTStatus.Running: Inc(Profile^.RunningCount);
+    end;
+  end;
+  for i := 0 to High(Result) do
+    if Result[i].ExecutionCount > 0 then
+      Result[i].AvgTimeMS := Result[i].TotalTimeMS / Result[i].ExecutionCount;
+end;
+
+(*
+### TBehaviorTree.PrintProfileReport
+```pascal
+procedure TBehaviorTree.PrintProfileReport();
+```
+Prints a formatted performance report to console.
+
+Example:
+```pascal
+Tree.SetDebugLevel(EBTDebugLevel.Verbose);
+Tree.Tick();
+Tree.PrintProfileReport();
+```
+*)
+procedure TBehaviorTree.PrintProfileReport();
+var
+  Report: array of TBTNodeProfile;
+  i: Integer;
+  Profile: TBTNodeProfile;
+begin
+  Report := Self.GenerateProfileReport();
+  if Length(Report) = 0 then
+    Exit;
+  WriteLn('--- Behavior Tree Profile Report ---');
+  WriteLn(Format('%-25s | %-5s | %-5s | %-5s | %-5s | %-10s | %-10s | %-10s',
+    ['Node Name', 'Count', 'OK', 'Fail', 'Run', 'Avg (ms)', 'Min (ms)', 'Max (ms)']));
+  WriteLn(''.PadLeft(95, '-'));
+  for i := 0 to High(Report) do
+  begin
+    Profile := Report[i];
+    WriteLn(Format('%-25s | %-5d | %-5d | %-5d | %-5d | %-10.4f | %-10.4f | %-10.4f',
+      [Profile.NodeName, Profile.ExecutionCount, Profile.SuccessCount, Profile.FailureCount,
+      Profile.RunningCount, Profile.AvgTimeMS, Profile.MinTimeMS, Profile.MaxTimeMS]));
+  end;
+  WriteLn(''.PadLeft(95, '-'));
+end; 
