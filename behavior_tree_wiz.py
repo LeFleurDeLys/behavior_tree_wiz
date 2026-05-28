@@ -360,8 +360,7 @@ class GraphParser:
             if not is_in_group:
                 if "ellipse" in style:
                     n_type = "Condition"
-                elif label.split('(')[0].strip().startswith("Is"):
-                    n_type = "Condition"
+
             elif "rhombus" in style:
                 if "δS" in symbol:
                     n_type = "ForceSuccess"
