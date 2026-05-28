@@ -164,6 +164,20 @@ class DecoratorStrategy(GenerationStrategy):
         if not node.children:
             return f"{indent}// Decorator '{display_name}' has no child"
         
+        if self.method_name == 'CreateLink':
+            generator_ref.collect_subtree_leaf_methods(node.children[0])
+
+        if self.method_name == 'CreateConditional' and node.condition_reference is not None:
+            cond_name = node.condition_reference
+            if cond_name.endswith('()'):
+                cond_name = cond_name[:-2]
+            if cond_name.startswith('@Self.'):
+                cond_name = cond_name[len('@Self.'):]
+            elif cond_name.startswith('@'):
+                cond_name = cond_name[1:]
+            if cond_name:
+                generator_ref._register_forward_method(cond_name, 'Condition')
+
         child_code = generator_ref.generate_node(node.children[0], indent_level + 1)
         
         param_str = ""
@@ -184,12 +198,15 @@ class DecoratorStrategy(GenerationStrategy):
                 param_str = f", {node.decorator_raw_param}"
         elif self.method_name == 'CreateConditional' and node.condition_reference is not None:
             cond_ref = node.condition_reference
+            if cond_ref.endswith('()'):
+                cond_ref = cond_ref[:-2]
             if cond_ref.startswith('@Self.'):
                 param_str = f", {cond_ref}"
             elif cond_ref.startswith('@'):
-                param_str = f", {cond_ref}"
+                bare = cond_ref[1:]
+                param_str = f", @Self.{bare}"
             else:
-                param_str = f", @{cond_ref}"
+                param_str = f", @Self.{cond_ref}"
 
         closing_args = ""
         if node.has_memory and self.method_name in ['CreateForceSuccess', 'CreateForceFailure']:
@@ -450,6 +467,8 @@ class SimbaGenerator:
         self.methods: Dict[str, Dict[str, Any]] = {}
         # list of wrappers
         self.wrappers: List[Dict[str, str]] = []
+        # leaf methods under Link decorators that need forward declarations
+        self.link_leaf_methods: List[Dict[str, Any]] = []
 
     def register_method(self, name: str, node_type: str, has_params: bool = False):
         if not name: return
@@ -490,6 +509,58 @@ class SimbaGenerator:
             'type': node_type
         })
         return wrapper_name
+
+    def _register_forward_method(self, name: str, node_type: str, has_params: bool = False):
+        for m in self.link_leaf_methods:
+            if m['name'] == name:
+                return
+        self.link_leaf_methods.append({'name': name, 'type': node_type, 'has_params': has_params})
+
+    def collect_subtree_leaf_methods(self, node: BTNode):
+        if node.node_type in ('Action', 'Condition'):
+            clean_label = node.label.strip().rstrip(';')
+            match = re.match(r'^([a-zA-Z0-9_]+)\((.*)\)$', clean_label)
+            if match:
+                func_name = match.group(1)
+                self._register_forward_method(func_name, node.node_type, has_params=True)
+            else:
+                func_name = node.label.split('(')[0]
+                func_name = "".join(x for x in func_name if x.isalnum() or x == '_')
+                if func_name:
+                    self._register_forward_method(func_name, node.node_type, has_params=False)
+        for child in node.children:
+            self.collect_subtree_leaf_methods(child)
+
+    def generate_forward_declarations(self) -> str:
+        if not self.link_leaf_methods:
+            return ""
+
+        lines = []
+        lines.append("// ---------------------------")
+        lines.append("// FORWARD DECLARATIONS (Link)")
+        lines.append("// ---------------------------")
+        lines.append("")
+
+        for m in self.link_leaf_methods:
+            name = m['name']
+            node_type = m['type']
+            has_params = m['has_params']
+
+            is_condition = (node_type == 'Condition')
+            ret_type = "Boolean" if is_condition else "EBTStatus"
+            param_str = "p0: string" if has_params else ""
+
+            lines.append(f"function TBot.{name}({param_str}): {ret_type}; forward;")
+
+        forward_names = {m['name'] for m in self.link_leaf_methods}
+        for w in self.wrappers:
+            if w['original'] in forward_names:
+                is_cond = (w['type'] == 'Condition')
+                ret_type = "Boolean" if is_cond else "EBTStatus"
+                lines.append(f"function TBot.{w['name']}(): {ret_type}; forward;")
+
+        lines.append("")
+        return "\n".join(lines)
 
     def generate_placeholders(self) -> str:
         lines = []
@@ -661,6 +732,7 @@ class ConverterApp:
             gen = SimbaGenerator()
             tree_code = gen.generate_code(root_node)
             placeholders = gen.generate_placeholders()
+            forward_decls = gen.generate_forward_declarations()
 
             # 3. Assemble
             user_header = self.header_text.get("1.0", tk.END).strip()
@@ -671,9 +743,12 @@ class ConverterApp:
             init_start = "procedure TBot.Init();\nbegin\n  Self.Tree.Setup('MyBot');"
             init_end = "  Self.Tree.PrintStructure();\n  AddOnTerminate(@Self.Tree.Free);\nend;"
 
+            forward_section = f"{forward_decls}\n" if forward_decls else ""
+
             full_script = (
                 f"{user_header}\n\n"
                 f"{bot_record}\n\n"
+                f"{forward_section}"
                 f"{placeholders}\n\n"
                 f"{init_start}\n"
                 f"  // Generated Tree\n"
