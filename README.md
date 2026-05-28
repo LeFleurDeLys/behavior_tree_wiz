@@ -27,9 +27,8 @@ Run behavior_tree_wiz.exe or the equivalent python script.
 ## Generates the whole behavior tree automatically
 <img width="703" height="746" alt="image" src="https://github.com/user-attachments/assets/2824b72c-ba53-4288-b5d8-224c0abae0d0" />
 
-## Available Nodes at the Moment
-<img width="1048" height="778" alt="image" src="https://github.com/user-attachments/assets/75d2d262-6394-4478-912f-967a741d6849" />
-Decorators to be added soon...
+# Available Nodes at the Moment
+<img width="1173" height="814" alt="photo_of_graph drawio" src="https://github.com/user-attachments/assets/3a6b348c-290e-4478-974f-9c80ecff86eb" />
 
 ## Example draw.io Behavior Tree snippet
 <img width="1223" height="780" alt="image" src="https://github.com/user-attachments/assets/d34085df-5b75-41ad-9b82-cdcd989bad2c" />
