@@ -87,7 +87,8 @@ You can put any string or expression inside the parentheses — it's passed thro
 | RandomSelector | `??` | Rectangle (grouped) | `??` | `PickRandom` | `Self.Tree.CreateRandomSelector('PickRandom', [...])` |
 | WeightedSelector | `?%` | Rectangle (grouped) | `?%` | `WeightedPick` | `Self.Tree.CreateWeightedSelector('WeightedPick', [...], [w1, w2, ...])` |
 
-> **Memory Mode** (Selector and Sequence only): Use **rounded rectangles** (`rounded=1` style) to enable memory on Selector and Sequence nodes. This appends `, True` to the generated call (e.g., `Self.Tree.CreateSelector('ChooseOne', [...], True)`). Memory mode is **not** supported for ParallelSelector, ParallelSequence, RandomSelector, or WeightedSelector.
+#### Memory Mode (Selector and Sequence only): 
+Use **rounded rectangles** (`rounded=1` style) to enable memory on Selector and Sequence nodes. This appends `, True` to the generated call (e.g., `Self.Tree.CreateSelector('ChooseOne', [...], True)`). Memory mode is **not** supported for ParallelSelector, ParallelSequence, RandomSelector, or WeightedSelector.
 
 #### WeightedSelector — Specifying Weights
 
