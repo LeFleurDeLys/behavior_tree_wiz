@@ -1,0 +1,2194 @@
+program GOTR_GOATER;
+{$I WaspLib/osrs.simba}
+
+const
+  SETTINGS_PATH = 'GOATERSettings.txt';
+
+  //RBG (SIMBA COLS) & THEIR RGB (RUNELITE OBJECT MARKET CLICKBOX FILL COLS) COUNTERPART
+  REMAINSLARGECOL : Integer = $FF0061;   //FF6100FF
+  RUBBLEUPCOL : Integer = $00A6CC;       //FFFF9000
+  RUBBLEDOWNCOL : Integer = $CC3388;     //FFAA00FF
+  ENTRANCECOL : Integer = $7600AA;       //FFAA0076
+  WORKBENCHCOL : Integer = $0026FF;      //FFFF2600
+  DEPOSITCOL : Integer = $8DFFFF;        //FFFFFF8D
+  REMAINSHUGECOL : Integer = $009600;    //FF009600
+  BANKCOL : Integer = $009600;           //FFD5FFFF
+  ALTARCOL : Integer = $FF0057;          //FF5700FF
+  PORTALEXITCOL : Integer = $00FFFF;     //FF5E87FF
+  GUARDIANCOL : Integer = $FF0061;       //FF5700FF
+  REWARDSGUYCOL : Integer = $6D28FF;     //FFFF286D
+
+  //ITEMS USED BY THE ITEMFINDER
+  // --- Craftable Runes (12) ---
+  RUNE_AIR:       TRSItem = 'Air rune';
+  RUNE_MIND:      TRSItem = 'Mind rune';
+  RUNE_WATER:     TRSItem = 'Water rune';
+  RUNE_EARTH:     TRSItem = 'Earth rune';
+  RUNE_FIRE:      TRSItem = 'Fire rune';
+  RUNE_BODY:      TRSItem = 'Body rune';
+  RUNE_COSMIC:    TRSItem = 'Cosmic rune';
+  RUNE_CHAOS:     TRSItem = 'Chaos rune';
+  RUNE_NATURE:    TRSItem = 'Nature rune';
+  RUNE_LAW:       TRSItem = 'Law rune';
+  RUNE_DEATH:     TRSItem = 'Death rune';
+  RUNE_BLOOD:     TRSItem = 'Blood rune';
+  // --- Essence Pouches (5) ---
+  POUCH_SMALL:    TRSItem = 'Small pouch';
+  POUCH_MEDIUM:   TRSItem = 'Medium pouch';
+  POUCH_LARGE:    TRSItem = 'Large pouch';
+  POUCH_GIANT:    TRSItem = 'Giant pouch';
+  POUCH_COLOSSAL: TRSItem = 'Colossal pouch';
+  // --- Jewelry ---
+  NECKLACE_BINDING: TRSItem = 'Binding necklace';
+  // --- Rune Pouches ---
+  RUNE_POUCH:        TRSItem = 'Rune pouch';
+  RUNE_POUCH_DIVINE: TRSItem = 'Divine rune pouch';
+  // --- Guardian Fragments & Remains ---
+  // Mined from the rocks
+  GUARDIAN_FRAGMENTS: TRSItem = 'Guardian fragments';
+  // Shards/Remnants used for crafting at the altars
+  SHARD_ELEMENTAL: TRSItem = 'Elemental guardian stone';
+  SHARD_CATALYTIC: TRSItem = 'Catalytic guardian stone';
+  // Specific "Remnant" rewards/shards
+  REMNANT_ELEMENTAL: TRSItem = 'Elemental remnant';
+  REMNANT_CATALYTIC: TRSItem = 'Catalytic remnant';
+  ABYSSAL_PEARLS:    TRSItem = 'Abyssal pearls';
+
+var
+  Form: TLazForm;
+  TPA, TPAS : TPointArray;
+  ATPA: T2DPointArray;
+  MostLikely, PNAME, PPASS, _LastDebugMsg: String;
+  GScriptRunning: Boolean = False;
+  CheckDone, Condition: Boolean;
+  x, y, z, i, MouseDefaultSpeed, MaxRuntimeMinutes: Integer;
+  FreeSlotsAmount: Integer;
+  StartXP: Integer;
+
+//WriteLn wrapper with current time added, only logs a new msg if not similar to last one.
+procedure log(s: string);
+begin
+  if (s = _LastDebugMsg) then Exit;
+  _LastDebugMsg := s;
+ WriteLn(GetTimeStamp('[hh:mm:ss:uu]') + ' ' + s);
+end;
+
+
+// -- BINARY CONDITION TREE | Left = False; Right = True | BECAUSE I CODE GOOFY STYLE(Standard is LeftyTruthy RightyFalsy)
+procedure EvaluateNode(NodeName: String; Condition: Boolean; FalseBranch, TrueBranch: procedure);
+begin
+  log('Evaluated ' + NodeName + ': ' + BoolToStr(Condition));
+  if Condition then
+    TrueBranch()
+  else
+    FalseBranch();
+end;
+
+// -- Helper functions for finding pixels n shit without violating memory --
+procedure checkAreaBounds(var Area: TBox);
+begin
+  Area.X1 := Min(Area.X1, Area.X2);
+  Area.X2 := Max(Area.X1, Area.X2);
+  Area.Y1 := Min(Area.Y1, Area.Y2);
+  Area.Y2 := Max(Area.Y1, Area.Y2);
+  if Area.X1 < 0 then Area.X1 := 0;
+  if Area.Y1 < 0 then Area.Y1 := 0;
+end;
+
+function HasSquare(TPA: TPointArray; Size: Integer; var Corner: TPoint): Boolean;
+var
+  i, dx, dy: Integer;
+  SortedTPA: TPointArray;
+  IsSquare: Boolean;
+
+  function HasPoint(const Pt: TPoint): Boolean;
+  var
+    L, R, M: Integer;
+  begin
+    L := 0;
+    R := High(SortedTPA);
+    while L <= R do
+    begin
+      M := L + (R - L) div 2;
+      if (SortedTPA[M].Y < Pt.Y) then
+        L := M + 1
+      else if (SortedTPA[M].Y > Pt.Y) then
+        R := M - 1
+      else // Y matches, check X
+      begin
+        if (SortedTPA[M].X < Pt.X) then
+          L := M + 1
+        else if (SortedTPA[M].X > Pt.X) then
+          R := M - 1
+        else
+          Exit(True);
+      end;
+    end;
+    Result := False;
+  end;
+
+begin
+  if Size <= 1 then
+  begin
+     if Length(TPA) > 0 then
+     begin
+       Corner := TPA[0];
+       Exit(True);
+     end;
+     Exit(False);
+  end;
+
+  if Length(TPA) < Size * Size then Exit(False);
+
+  // Copy and Sort TPA to allow binary search (O(N log N))
+  // We use a copy to avoid modifying the passed TPA if it's reused elsewhere
+  SortedTPA := Copy(TPA);
+  SortedTPA.SortByX;
+  SortedTPA.SortByY;
+
+  for i := 0 to High(SortedTPA) do
+  begin
+    // Check if we have a square starting at SortedTPA[i] (Top-Left)
+
+    // Optimization: Quickly check if the other 3 corners exist first
+    if HasPoint(Point(SortedTPA[i].X + Size - 1, SortedTPA[i].Y)) and             // Top-Right
+       HasPoint(Point(SortedTPA[i].X, SortedTPA[i].Y + Size - 1)) and             // Bottom-Left
+       HasPoint(Point(SortedTPA[i].X + Size - 1, SortedTPA[i].Y + Size - 1)) then // Bottom-Right
+    begin
+      IsSquare := True;
+      // Check the rest of the points
+      for dy := 0 to Size - 1 do
+      begin
+        for dx := 0 to Size - 1 do
+        begin
+          // Skip corners we already checked
+          if ((dx = 0) or (dx = Size - 1)) and ((dy = 0) or (dy = Size - 1)) then Continue;
+
+          if not HasPoint(Point(SortedTPA[i].X + dx, SortedTPA[i].Y + dy)) then
+          begin
+            IsSquare := False;
+            Break;
+          end;
+        end;
+        if not IsSquare then Break;
+      end;
+
+      if IsSquare then
+      begin
+        Corner := SortedTPA[i];
+        Exit(True);
+      end;
+    end;
+  end;
+
+  Result := False;
+end;
+
+// -- THIS SECTION CONTAINS OLDSCHOOL SIMBA METHODS I RECREATED FOR SIMBA 2000, BECAUSE I'M AN OLD FART STUCK IN MY WAYS -FiniLeNiaisage
+function FindColoredArea(var x, y: Integer; Color: Integer; SearchBox: TBox; Tolerance: Integer; MinCount: Integer): Boolean;
+var
+  TPA: TPointArray;
+  Corner: TPoint;
+begin
+  Result := False;
+  checkAreaBounds(SearchBox);
+  TPA := Target.FindColor(Color, Tolerance, SearchBox);
+  if HasSquare(TPA, MinCount, Corner) then
+  begin
+    x := Corner.X;
+    y := Corner.Y;
+    Result := True;
+  end;
+end;
+
+
+function FindColoredAreaTolerance(var x, y: Integer; Color: Integer; SearchBox: TBox; Tolerance: Integer; MinCount: Integer): Boolean;
+var
+  TPA: TPointArray;
+  Corner: TPoint;
+begin
+  Result := False;
+  checkAreaBounds(SearchBox);
+  TPA := Target.FindColor(Color, Tolerance, SearchBox);
+  if HasSquare(TPA, MinCount, Corner) then
+  begin
+    x := Corner.X;
+    y := Corner.Y;
+    Result := True;
+  end;
+end;
+
+function FindColoredAreas(var ResultTPA: TPointArray; Color: Integer; SearchBox: TBox; Tolerance: Integer; MinCount: Integer): Boolean;
+var
+  Corner: TPoint;
+begin
+  Result := False;
+  ResultTPA := Target.FindColor(Color, Tolerance, SearchBox);
+  if HasSquare(ResultTPA, MinCount, Corner) then
+    Result := True;
+end;
+
+function FindColoredAreasTolerance(var ResultTPA: TPointArray; Color: Integer; SearchBox: TBox; Tolerance: Integer; MinCount: Integer): Boolean;
+var
+  Corner: TPoint;
+begin
+  Result := False;
+  ResultTPA := Target.FindColor(Color, Tolerance, SearchBox);
+  if HasSquare(ResultTPA, MinCount, Corner) then
+    Result := True;
+end;
+
+// -- CACHING AND MULTI THREADING MANAGEMENT --
+type
+  TGameState = record
+    FChunk: String;
+    FRegion: String;
+    FTile: TPoint;
+    FLastUpdate: UInt64;
+    FIsLoggedIn: Boolean;
+    FXP: Int64;
+    FMiningXP: Int64;
+    FCraftingXP: Int64;
+    FMagicXP: Int64;
+  end;
+
+  TGameStateAnalyzer = record
+      FPositionOCR: TOCR;
+      FXPOCR: TOCR;
+      FPositionThread: TThread;
+      FXPThread: TThread;
+      FLoginThread: TThread;
+  end;
+
+  TGoaterSettings = record
+    CraftAir, CraftMind, CraftWater, CraftEarth, CraftFire, CraftBody,
+    CraftCosmic, CraftChaos, CraftNature, CraftLaw, CraftDeath, CraftBlood: Boolean;
+    UseSmall, UseMedium, UseLarge, UseGiant, UseColossal: Boolean;
+    UseBindingNecklace, UseHighestLvlRune, UseHighestPoints: Boolean;
+    TotalRuntime: Int64;
+    TotalXP: Int64;
+    TotalRunecraftingXP: Int64;
+    TotalMagicXP: Int64;
+    TotalMiningXP: Int64;
+    TotalCraftingXP: Int64;
+    LastRuntime: Int64;
+    LastTotalXP: Integer;
+    LastRunecraftingXP: Integer;
+    LastMagicXP: Integer;
+    LastMiningXP: Integer;
+    LastCraftingXP: Integer;
+  end;
+
+var
+  Settings: TGoaterSettings;
+  GameState: TGameState;
+  GameStateAnalyzer: TGameStateAnalyzer;
+  GameStateLock: TLock;
+  InitialRuntimeSnapshot: Int64;
+  StatsLock: TLock;
+  StatsThreadInstance: TThread;
+  InitialTotalXP, InitialRunecraftingXP, InitialMagicXP, InitialMiningXP, InitialCraftingXP: Int64;
+
+// TGameState method implementations
+function TGameState.IsLoggedIn: Boolean;
+begin
+  GameStateLock.Enter;
+  try
+    Result := Self.FIsLoggedIn;
+  finally
+    GameStateLock.Leave;
+  end;
+end;
+
+function TGameState.GetChunk: String;
+begin
+  GameStateLock.Enter;
+  try
+    Result := Self.FChunk;
+  finally
+    GameStateLock.Leave;
+  end;
+end;
+
+function TGameState.GetRegion: String;
+begin
+  GameStateLock.Enter;
+  try
+    Result := Self.FRegion;
+  finally
+    GameStateLock.Leave;
+  end;
+end;
+
+function TGameState.GetTile: TPoint;
+begin
+  GameStateLock.Enter;
+  try
+    Result := Self.FTile;
+  finally
+    GameStateLock.Leave;
+  end;
+end;
+
+function TGameState.GetXP: Int64;
+begin
+  GameStateLock.Enter;
+  try
+    Result := Self.FXP;
+  finally
+    GameStateLock.Leave;
+  end;
+end;
+
+function TGameState.GetMiningXP: Int64;
+begin
+  GameStateLock.Enter;
+  try
+    Result := Self.FMiningXP;
+  finally
+    GameStateLock.Leave;
+  end;
+end;
+
+function TGameState.GetCraftingXP: Int64;
+begin
+  GameStateLock.Enter;
+  try
+    Result := Self.FCraftingXP;
+  finally
+    GameStateLock.Leave;
+  end;
+end;
+
+function TGameState.GetMagicXP: Int64;
+begin
+  GameStateLock.Enter;
+  try
+    Result := Self.FMagicXP;
+  finally
+    GameStateLock.Leave;
+  end;
+end;
+
+
+// --- ASYNC GAME STATE ANALYZER ---
+
+procedure GameStateAnalyzer_Init;
+begin
+end;
+
+procedure LoginStateAnalyzer_Execute(Thread: TThread);
+var
+  LoggedIn: Boolean;
+begin
+  while not Thread.IsTerminated do
+  begin
+    try
+      LoggedIn := RSClient.IsLoggedIn();
+
+      GameStateLock.Enter;
+      try
+        GameState.FIsLoggedIn := LoggedIn;
+      finally
+        GameStateLock.Leave;
+      end;
+    except
+      if not Thread.IsTerminated then
+        //WriteLn('Error in LoginStateAnalyzer.');
+    end;
+
+    Sleep(1);
+  end;
+end;
+
+procedure RunLoginStateAnalyzer;
+begin
+  LoginStateAnalyzer_Execute(CurrentThread());
+end;
+
+function SaveSettings(Settings: TGoaterSettings; FilePath: String): Boolean; forward;
+
+procedure StatsThread_Execute(Thread: TThread);
+var
+  CurrentSessionTime: Int64;
+  CurrentTotalXP, TotalGained, Mined, Magic, Craft, RCGain: Int64;
+begin
+  while not Thread.IsTerminated do
+  begin
+    CurrentSessionTime := GetTimeRunning();
+
+    // Calculate stats
+    CurrentTotalXP := GameState.GetXP();
+    Mined := GameState.GetMiningXP();
+    Magic := GameState.GetMagicXP();
+    Craft := GameState.GetCraftingXP();
+
+    StatsLock.Enter;
+    try
+      Settings.TotalRuntime := InitialRuntimeSnapshot + CurrentSessionTime;
+      Settings.LastRuntime := CurrentSessionTime;
+
+      if CurrentTotalXP > 0 then
+      begin
+        TotalGained := CurrentTotalXP - StartXP;
+        if TotalGained < 0 then TotalGained := 0;
+
+        // Update Totals (Initial Snapshot + Gain)
+        Settings.TotalXP := InitialTotalXP + TotalGained;
+        Settings.TotalMiningXP := InitialMiningXP + Mined;
+        Settings.TotalMagicXP := InitialMagicXP + Magic;
+        Settings.TotalCraftingXP := InitialCraftingXP + Craft;
+
+        RCGain := TotalGained - Mined - Magic - Craft;
+        if RCGain < 0 then RCGain := 0;
+        Settings.TotalRunecraftingXP := InitialRunecraftingXP + RCGain;
+
+        // Update Lasts (Current Session Gain)
+        Settings.LastTotalXP := TotalGained;
+        Settings.LastMiningXP := Mined;
+        Settings.LastMagicXP := Magic;
+        Settings.LastCraftingXP := Craft;
+        Settings.LastRunecraftingXP := RCGain;
+      end;
+
+      SaveSettings(Settings, SETTINGS_PATH);
+    finally
+      StatsLock.Leave;
+    end;
+    Sleep(1000);
+  end;
+end;
+
+procedure RunStatsThread;
+begin
+  StatsThread_Execute(CurrentThread());
+end;
+
+function SaveSettings(Settings: TGoaterSettings; FilePath: String): Boolean;
+var
+  FileContent: String;
+begin
+  try
+    FileContent := '';
+    FileContent += 'craft_air=' + BoolToStr(Settings.CraftAir) + #13#10;
+    FileContent += 'craft_mind=' + BoolToStr(Settings.CraftMind) + #13#10;
+    FileContent += 'craft_water=' + BoolToStr(Settings.CraftWater) + #13#10;
+    FileContent += 'craft_earth=' + BoolToStr(Settings.CraftEarth) + #13#10;
+    FileContent += 'craft_fire=' + BoolToStr(Settings.CraftFire) + #13#10;
+    FileContent += 'craft_body=' + BoolToStr(Settings.CraftBody) + #13#10;
+    FileContent += 'craft_cosmic=' + BoolToStr(Settings.CraftCosmic) + #13#10;
+    FileContent += 'craft_chaos=' + BoolToStr(Settings.CraftChaos) + #13#10;
+    FileContent += 'craft_nature=' + BoolToStr(Settings.CraftNature) + #13#10;
+    FileContent += 'craft_law=' + BoolToStr(Settings.CraftLaw) + #13#10;
+    FileContent += 'craft_death=' + BoolToStr(Settings.CraftDeath) + #13#10;
+    FileContent += 'craft_blood=' + BoolToStr(Settings.CraftBlood) + #13#10;
+    FileContent += 'use_small_pouch=' + BoolToStr(Settings.UseSmall) + #13#10;
+    FileContent += 'use_medium_pouch=' + BoolToStr(Settings.UseMedium) + #13#10;
+    FileContent += 'use_large_pouch=' + BoolToStr(Settings.UseLarge) + #13#10;
+    FileContent += 'use_giant_pouch=' + BoolToStr(Settings.UseGiant) + #13#10;
+    FileContent += 'use_colossal_pouch=' + BoolToStr(Settings.UseColossal) + #13#10;
+    FileContent += 'use_binding_necklace=' + BoolToStr(Settings.UseBindingNecklace) + #13#10;
+    FileContent += 'use_highest_lvl_rune=' + BoolToStr(Settings.UseHighestLvlRune) + #13#10;
+    FileContent += 'use_highest_points=' + BoolToStr(Settings.UseHighestPoints) + #13#10;
+    FileContent += 'total_runtime=' + IntToStr(Settings.TotalRuntime) + #13#10;
+    FileContent += 'total_xp=' + IntToStr(Settings.TotalXP) + #13#10;
+    FileContent += 'total_rc_xp=' + IntToStr(Settings.TotalRunecraftingXP) + #13#10;
+    FileContent += 'total_magic_xp=' + IntToStr(Settings.TotalMagicXP) + #13#10;
+    FileContent += 'total_mining_xp=' + IntToStr(Settings.TotalMiningXP) + #13#10;
+    FileContent += 'total_crafting_xp=' + IntToStr(Settings.TotalCraftingXP) + #13#10;
+    FileContent += 'last_runtime=' + IntToStr(Settings.LastRuntime) + #13#10;
+    FileContent += 'last_total_xp=' + IntToStr(Settings.LastTotalXP) + #13#10;
+    FileContent += 'last_rc_xp=' + IntToStr(Settings.LastRunecraftingXP) + #13#10;
+    FileContent += 'last_magic_xp=' + IntToStr(Settings.LastMagicXP) + #13#10;
+    FileContent += 'last_mining_xp=' + IntToStr(Settings.LastMiningXP) + #13#10;
+    FileContent += 'last_crafting_xp=' + IntToStr(Settings.LastCraftingXP) + #13#10;
+
+    Result := FileWrite(FilePath, FileContent);
+  except
+    log('Error saving settings to ' + FilePath);
+    Result := False;
+  end;
+end;
+
+function LoadSettings(var Settings: TGoaterSettings; FilePath: String): Boolean;
+var
+  FileContent: String;
+  Lines: TStringArray;
+  i, p: Integer;
+  Key, Value: String;
+begin
+  if not FileExists(FilePath) then
+    Exit(False);
+
+  try
+    FileContent := FileRead(FilePath);
+    Lines := FileContent.Split(#13#10, True);
+
+    for i := 0 to High(Lines) do
+    begin
+      p := Pos('=', Lines[i]);
+      if p > 0 then
+      begin
+        Key := Trim(Copy(Lines[i], 1, p - 1));
+        Value := Trim(Copy(Lines[i], p + 1, Length(Lines[i])));
+
+        try
+          case Lowercase(Key) of
+            'craft_air': Settings.CraftAir := StrToBool(Value);
+            'craft_mind': Settings.CraftMind := StrToBool(Value);
+            'craft_water': Settings.CraftWater := StrToBool(Value);
+            'craft_earth': Settings.CraftEarth := StrToBool(Value);
+            'craft_fire': Settings.CraftFire := StrToBool(Value);
+            'craft_body': Settings.CraftBody := StrToBool(Value);
+            'craft_cosmic': Settings.CraftCosmic := StrToBool(Value);
+            'craft_chaos': Settings.CraftChaos := StrToBool(Value);
+            'craft_nature': Settings.CraftNature := StrToBool(Value);
+            'craft_law': Settings.CraftLaw := StrToBool(Value);
+            'craft_death': Settings.CraftDeath := StrToBool(Value);
+            'craft_blood': Settings.CraftBlood := StrToBool(Value);
+            'use_small_pouch': Settings.UseSmall := StrToBool(Value);
+            'use_medium_pouch': Settings.UseMedium := StrToBool(Value);
+            'use_large_pouch': Settings.UseLarge := StrToBool(Value);
+            'use_giant_pouch': Settings.UseGiant := StrToBool(Value);
+            'use_colossal_pouch': Settings.UseColossal := StrToBool(Value);
+            'use_binding_necklace': Settings.UseBindingNecklace := StrToBool(Value);
+            'use_highest_lvl_rune': Settings.UseHighestLvlRune := StrToBool(Value);
+            'use_highest_points': Settings.UseHighestPoints := StrToBool(Value);
+            'total_runtime': Settings.TotalRuntime := StrToInt(Value, 0);
+            'total_xp': Settings.TotalXP := StrToInt(Value, 0);
+            'total_rc_xp': Settings.TotalRunecraftingXP := StrToInt(Value, 0);
+            'total_magic_xp': Settings.TotalMagicXP := StrToInt(Value, 0);
+            'total_mining_xp': Settings.TotalMiningXP := StrToInt(Value, 0);
+            'total_crafting_xp': Settings.TotalCraftingXP := StrToInt(Value, 0);
+            'last_runtime': Settings.LastRuntime := StrToInt(Value, 0);
+            'last_total_xp': Settings.LastTotalXP := StrToInt(Value, 0);
+            'last_rc_xp': Settings.LastRunecraftingXP := StrToInt(Value, 0);
+            'last_magic_xp': Settings.LastMagicXP := StrToInt(Value, 0);
+            'last_mining_xp': Settings.LastMiningXP := StrToInt(Value, 0);
+            'last_crafting_xp': Settings.LastCraftingXP := StrToInt(Value, 0);
+          end;
+        except
+          log('Warning: Invalid boolean value for key "' + Key + '": "' + Value + '". Using default.');
+        end;
+      end;
+    end;
+    Result := True;
+  except
+    log('Error reading or parsing settings file: ' + FilePath);
+    Result := False;
+  end;
+end;
+
+procedure XPAnalyzer_Execute(Thread: TThread);
+var
+  MiningSearchBox: TBox;
+  MiningTPA: TPointArray;
+  MiningLines: TStringArray;
+  i: Integer;
+  CurrentXP, PreviousXP, XPDelta: Integer;
+  IsMiningNow: Boolean;
+  RawXP, CleanXP: string;
+
+begin
+  PreviousXP := -1;
+  try
+    while not Thread.IsTerminated do
+    begin
+      try
+        CurrentXP := -1;
+        try
+
+          if XPBar.Size <> ERSXPBarSize.UNKNOWN then
+          begin
+            begin
+              RawXP := GameStateAnalyzer.FXPOCR.Recognize(XPBar.Bounds, XPBar.Font, [$FFFFFF], 0);
+              CleanXP := '';
+              for i := 1 to Length(RawXP) do
+              begin
+                if (RawXP[i] in '0123456789') then
+                  CleanXP := CleanXP + RawXP[i];
+              end;
+              CurrentXP := StrToInt(CleanXP, -1);
+            end;
+          end;
+        except
+        end;
+
+        if (PreviousXP > -1) and (CurrentXP > PreviousXP) then
+        begin
+          XPDelta := CurrentXP - PreviousXP;
+
+          IsMiningNow := False;
+          MiningSearchBox := Box(1, 1, 200, 420);
+          MiningTPA := Target.FindColor($00FF00, 0, MiningSearchBox);
+
+          if Length(MiningTPA) > 0 then
+          begin
+            MiningLines := GameStateAnalyzer.FXPOCR.RecognizeLines(MiningTPA.Bounds(), RSFonts.PLAIN_12, [$00FF00], 0);
+            for i := 0 to High(MiningLines) do
+            begin
+              if Pos('Mining', MiningLines[i]) > 0 then
+              begin
+                IsMiningNow := True;
+                Break;
+              end;
+            end;
+          end;
+
+          if IsMiningNow then
+        begin
+          GameStateLock.Enter;
+          try
+            GameState.FMiningXP := GameState.FMiningXP + XPDelta;
+          finally
+            GameStateLock.Leave;
+          end;
+        end else
+        begin
+          // Crafting XP Detection
+          if (XPDelta < 4000) then
+          begin
+            // We use GetTile safely here as it handles its own lock
+            if (GameState.GetTile().X >= 3610) and (GameState.GetTile().X <= 3613) and
+               (GameState.GetTile().Y >= 9485) and (GameState.GetTile().Y <= 9488) then
+            begin
+              GameStateLock.Enter;
+              try
+                GameState.FCraftingXP := GameState.FCraftingXP + XPDelta;
+              finally
+                GameStateLock.Leave;
+              end;
+            end;
+          end;
+        end;
+      end;
+
+      if CurrentXP > -1 then
+      begin
+        PreviousXP := CurrentXP;
+
+        GameStateLock.Enter;
+        try
+           GameState.FXP := CurrentXP;
+        finally
+           GameStateLock.Leave;
+        end;
+      end;
+
+      except
+        if not Thread.IsTerminated then
+          //WriteLn('Error in XPAnalyzer.');
+      end;
+
+      Sleep(1);
+    end;
+  finally
+
+  end;
+end;
+
+procedure PositionAnalyzer_Execute(Thread: TThread);
+var
+  NewChunk, NewRegion, TileID: String;
+  NewTile: TPoint;
+  OverlaySearchBox, OverlayBounds: TBox;
+  TPA: TPointArray;
+  Lines: TStringArray;
+  i, j: Integer;
+  LineText, CleanText: String;
+begin
+  while not Thread.IsTerminated do
+  begin
+    try
+      // 1. Find the overlay (dark background)
+      OverlaySearchBox := Box(1, 1, 200, 420);
+      TPA := Target.FindColor($2D3438, 10, OverlaySearchBox);
+
+      if Length(TPA) > 0 then
+        OverlayBounds := TPA.Bounds()
+      else
+        OverlayBounds := Box(0, 0, 0, 0);
+
+      NewChunk := '';
+      NewRegion := '';
+      TileID := '';
+
+      // 2. Perform OCR operations OUTSIDE the critical section
+      if (OverlayBounds.X2 > 0) then
+      begin
+        // Single OCR pass to get all text in the overlay
+        Lines := GameStateAnalyzer.FPositionOCR.RecognizeLines(OverlayBounds, RSFonts.PLAIN_12, [$FFFFFF], 0);
+
+        for i := 0 to High(Lines) do
+        begin
+          LineText := Lines[i];
+
+          // Basic check for labels
+          if (Pos('Chunk', LineText) > 0) or (Pos('Region', LineText) > 0) or (Pos('Tile', LineText) > 0) then
+          begin
+             CleanText := '';
+             for j := 1 to Length(LineText) do
+             begin
+               if (LineText[j] in '0123456789') then
+                 CleanText := CleanText + LineText[j];
+             end;
+
+             if (Pos('Chunk', LineText) > 0) then NewChunk := CleanText;
+             if (Pos('Region', LineText) > 0) then NewRegion := CleanText;
+             if (Pos('Tile', LineText) > 0) then TileID := CleanText;
+          end;
+        end;
+      end;
+
+      NewTile := Point(-1, -1);
+      if Length(TileID) >= 8 then
+      begin
+        try
+          NewTile.X := StrToInt(Copy(TileID, 1, 4));
+          NewTile.Y := StrToInt(Copy(TileID, 5, 4));
+        except
+          NewTile := Point(-1, -1);
+        end;
+      end;
+
+      // 3. Critical Section: Only update the shared state
+      GameStateLock.Enter;
+      try
+        GameState.FChunk := NewChunk;
+        GameState.FRegion := NewRegion;
+        GameState.FTile := NewTile;
+        GameState.FLastUpdate := GetTimeRunning();
+      finally
+        GameStateLock.Leave;
+      end;
+
+    except
+      if not Thread.IsTerminated then
+        //WriteLn('Error in PositionAnalyzer.');
+    end;
+
+    Sleep(1);
+  end;
+end;
+
+procedure RunPositionAnalyzer;
+begin
+    PositionAnalyzer_Execute(CurrentThread());
+end;
+
+procedure RunXPAnalyzer;
+begin
+    XPAnalyzer_Execute(CurrentThread());
+end;
+
+procedure GameStateAnalyzer_Start;
+begin
+  if GameStateAnalyzer.FPositionThread = nil then
+    GameStateAnalyzer.FPositionThread := TThread.Create(@RunPositionAnalyzer);
+  if GameStateAnalyzer.FXPThread = nil then
+    GameStateAnalyzer.FXPThread := TThread.Create(@RunXPAnalyzer);
+  if GameStateAnalyzer.FLoginThread = nil then
+    GameStateAnalyzer.FLoginThread := TThread.Create(@RunLoginStateAnalyzer);
+end;
+
+procedure GameStateAnalyzer_Terminate;
+begin
+  if GameStateAnalyzer.FPositionThread <> nil then GameStateAnalyzer.FPositionThread.Terminate;
+  if GameStateAnalyzer.FXPThread <> nil then GameStateAnalyzer.FXPThread.Terminate;
+  if GameStateAnalyzer.FLoginThread <> nil then GameStateAnalyzer.FLoginThread.Terminate;
+end;
+
+procedure GameStateAnalyzer_WaitFor;
+begin
+  if GameStateAnalyzer.FPositionThread <> nil then GameStateAnalyzer.FPositionThread.WaitForTerminate;
+  if GameStateAnalyzer.FXPThread <> nil then GameStateAnalyzer.FXPThread.WaitForTerminate;
+  if GameStateAnalyzer.FLoginThread <> nil then GameStateAnalyzer.FLoginThread.WaitForTerminate;
+end;
+
+procedure GameStateAnalyzer_Free;
+begin
+  if (GameStateAnalyzer.FPositionThread <> nil) then
+  begin
+    GameStateAnalyzer.FPositionThread.Terminate;
+    GameStateAnalyzer.FPositionThread.WaitForTerminate;
+    GameStateAnalyzer.FPositionThread.Free;
+    GameStateAnalyzer.FPositionThread := nil;
+  end;
+  if (GameStateAnalyzer.FXPThread <> nil) then
+  begin
+    GameStateAnalyzer.FXPThread.Terminate;
+    GameStateAnalyzer.FXPThread.WaitForTerminate;
+    GameStateAnalyzer.FXPThread.Free;
+    GameStateAnalyzer.FXPThread := nil;
+  end;
+  if (GameStateAnalyzer.FLoginThread <> nil) then
+  begin
+    GameStateAnalyzer.FLoginThread.Terminate;
+    GameStateAnalyzer.FLoginThread.WaitForTerminate;
+    GameStateAnalyzer.FLoginThread.Free;
+    GameStateAnalyzer.FLoginThread := nil;
+  end;
+end;
+
+procedure DeclarePlayaz;
+  begin
+    PNAME      := 'ay';           // Player name
+    PPASS      := 'ya'  ;               // Player password
+    MaxRuntimeMinutes := 33;                 // Max runtime in minutes
+    //Login.AddPlayer(PNAME, PPASS, []);
+  end;
+
+(* AnthroMove*)
+procedure AnthroMove(Point: TPoint);
+var
+  mPt: TPoint;
+  S: Int32;
+  Miss: Double;
+  Range: Int64;
+begin
+  S := MouseDefaultSpeed;
+  Range := Trunc(Power(Mouse.Position.DistanceTo(Point), 0.73)); // how much possible range to miss
+  Miss := RandomMode(0.9, 0.1, 1.5); // Where miss will happen. 1 = destination (P).
+  mPt.X := Trunc((1-Miss)*Mouse.Position.X + Miss*Point.X);
+  mPt.Y := Trunc((1-Miss)*Mouse.Position.Y + Miss*Point.Y);
+  mPt.X += Round(GaussRand(0, Range / 2));
+  mPt.Y += Round(GaussRand(0, Range / 2));
+  Mouse.Move(mPt);
+  Mouse.Speed := S * 0.85;
+  Mouse.Move(Point);
+  Mouse.Speed := S;
+end;
+
+(*MMouseOffClient*)
+procedure MMouseOffClient(Direction: String);
+var
+  B: TBoxArray;
+  P: TPoint;
+  i, W, H: Integer;
+begin
+  W := Target.Width;
+  H := Target.Height;
+  SetLength(B, 4);
+  B[0] := Box(-444, -444, W, 0); //top
+  B[1] := Box(0, H, W, H +3); //bottom
+  B[2] := Box(0-444, 0, 0, H); //left
+  B[3] := Box(W, 0, W +444, H); //right
+  case Lowercase(Direction) of
+    'top': i := 0;
+    'bottom':  i := 1;
+    'left': i := 2;
+    'right': i := 3;
+    'rand', 'random': i := Random(4);
+    else
+      log('Wrong direction');
+  end;
+  P := Point(Random(B[i].X1, B[i].X2), Random(B[i].Y1, B[i].Y2));
+  AnthroMove(P);
+end;
+
+(*pickUpMouse*)
+procedure pickUpMouse();
+var
+  cx,cy,XX,YY : Integer;
+begin
+  cx := Mouse.Position.X;
+  cy := Mouse.Position.Y;
+  XX := cx;
+  YY := cy;
+  if(Random(2) = 0)then
+    AnthroMove(point(cx-2-Random(9), cy-8-Random(21)))
+  else
+    AnthroMove(point(cx+3, cy-8-Random(19)));
+  sleep(1337 + Random(-137,666));
+  if(Random(2) = 0)then
+    Mouse.Move(Mouse.Miss(Point(XX+random(1,9),YY+random(2,14))))
+  else
+    Mouse.Move(Mouse.Miss(Point(XX-3-Random(1,9),YY+random(3, 18))));
+end;
+
+function RandomDirection: String;
+begin
+if not CheckDone then       //Var to make sure we don't resset every loop
+  case Random(0,3) of  //We assign a side we are most likely to mouse off to for this session
+  0 : MostLikely := 'top';
+  1 : MostLikely := 'bottom';
+  2 : MostLikely := 'left';
+  3 : MostLikely := 'right';
+  end
+ else
+  CheckDone:= True;
+  result := MostLikely;
+end;
+
+procedure Antibanning;
+begin
+
+end;
+
+Function pointToBox(Point: TPoint; Size: Integer): TBox; overload;
+begin
+  Result := Box(Point.X-round(Size/2), Point.Y-round(Size/2), Point.X+round(Size/2), Point.Y+round(Size/2));
+end;
+
+function didClick(Red: Boolean; Time: integer): boolean;
+var
+  T : TStopwatch;
+  B : TBox;
+  colR, colG : TColorTolerance;
+begin
+  B := pointToBox(Mouse.Position, 30);
+  checkAreaBounds(B);
+  colR.Color := (255);
+  colR.Tolerance := (15);
+  colG.Color := (65535);
+  colG.Tolerance := (15);
+  T.start();
+  while (T.Elapsed < Time) do
+  begin
+    Sleep(10);
+    try
+      if Red then
+      begin
+        begin
+          if (Target.CountColor(colR.Color, colR.Tolerance, B) > 30) then
+          begin
+            log("Found the red from our click");
+            Exit(true);
+          end;
+        end;
+      end;
+      except
+      end;
+    end;
+end;
+
+function didRedClick(TimeOut : Integer = 1000): Boolean;
+begin
+  Result := didClick(true, TimeOut);
+end;
+
+function didYellowClick(TimeOut : Integer = 1000): Boolean;
+begin
+  Result := didClick(false, TimeOut);
+end;
+
+procedure T2DPointArray.Shuffle(IndexesToShuffle : Integer);
+var
+  i: Integer;
+begin
+  //Will make it so we only shuffle the amount of indexs we want
+  if self.Length > IndexesToShuffle then
+  //Mixes the index around randomly
+  for i := (IndexesToShuffle - 1) downto 0 do
+    system.swap(self[i], self[random(i + 1)]);
+end;
+
+function TPointArray.Shuffle(): TPointArray;
+var
+  vIndex:int32;
+begin
+  for vIndex:=high(result:=self) downto 0 do
+    system.swap(result[vIndex],result[random(vIndex+1)]);
+  exit(result);
+end;
+
+procedure AntibanAFK;
+begin
+
+end;
+
+procedure AddMagicXP(XP: Integer);
+begin
+  GameStateLock.Enter;
+  try
+    GameState.FMagicXP := GameState.FMagicXP + XP;
+  finally
+    GameStateLock.Leave;
+  end;
+end;
+
+
+// --- LEAF PROCEDURES ---
+
+procedure HandleLoginAndBreaks; begin log('Action: HandleLoginAndBreaks'); end;
+
+procedure ContactNPCRepair;
+begin
+  log('Action: ContactNPCRepair');
+  AddMagicXP(63);
+end;
+
+procedure HandleSupplies; begin log('Action: HandleSupplies'); end;
+procedure OpenBank; begin log('Action: OpenBank'); end;
+procedure LookAtBank; begin log('Action: LookAtBank'); end;
+procedure EnterMinigame; begin log('Action: EnterMinigame'); end;
+procedure LookAtEntrance; begin log('Action: LookAtEntrance'); end;
+procedure AntibanWaitForStart; begin log('Action: AntibanWaitForStart'); end;
+procedure ClimbRubbleDown; begin log('Action: ClimbRubbleDown'); end;
+procedure PortalLeaveBeforeGame; begin log('Action: PortalLeaveBeforeGame'); end;
+procedure ErrorMsg; begin log('Action: ErrorMsg - Are we not anywhere?'); TerminateScript; end;
+procedure EmpowerGuardian; begin log('Action: EmpowerGuardian'); end;
+procedure AntibanUntilPortal; begin log('Action: AntibanUntilPortal'); end;
+procedure HandleWorkshop; begin log('Action: HandleWorkshop'); end;
+procedure LogWeird; begin log('Action: How did we end up here?'); end;
+procedure ClimbRubbleUp; begin log('Action: ClimbRubbleUp'); end;
+
+procedure StartMining;
+var
+RemainsPnt : TPoint;
+begin
+  log('Action: StartMining');
+
+    if FindColoredAreas(TPAS, RemainsLargeCol, MainScreen.Bounds, 0, 2) then
+    begin
+      TPAS.Shuffle;
+      RemainsPnt := TPAS[0];   //Simply choose a random TPoint from the ones we gathered
+      AnthroMove(RemainsPnt);
+
+      Condition := MainScreen.IsUpText(['Mine', 'Large', 'remains'], True, 0.85, 0);
+
+      if Condition then
+        begin
+          Mouse.Click(EMouseButton.LEFT);
+          if DidRedClick then
+            begin
+              Exit();
+            end;
+          if DidYellowClick then
+            begin
+              log('Yellow click detected, let''s run the tree again.');
+              Exit;
+            end;
+        end else
+          log('Did NOT find the Large guardian remains UpText we were looking for.');
+    end else
+      log('Did NOT find the Large guardian remains ColoredArea we were looking for.');
+ end;
+
+procedure AntibanWhileMining; begin log('Action: AntibanWhileMining'); end;
+procedure LeaveThroughPortal; begin log('Action: LeaveThroughPortal'); end;
+procedure CraftEarth; begin log('Action: CraftEarth'); end;
+procedure LeaveEarth; begin log('Action: LeaveEarth'); end;
+procedure CraftAir; begin log('Action: CraftAir'); end;
+procedure LeaveAir; begin log('Action: LeaveAir'); end;
+procedure CraftWater; begin log('Action: CraftWater'); end;
+procedure LeaveWater; begin log('Action: LeaveWater'); end;
+procedure CraftFire; begin log('Action: CraftFire'); end;
+procedure LeaveFire; begin log('Action: LeaveFire'); end;
+procedure CraftBody; begin log('Action: CraftBody'); end;
+procedure LeaveBody; begin log('Action: LeaveBody'); end;
+procedure CraftNature; begin log('Action: CraftNature'); end;
+procedure LeaveNature; begin log('Action: LeaveNature'); end;
+procedure CraftBlood; begin log('Action: CraftBlood'); end;
+procedure LeaveBlood; begin log('Action: LeaveBlood'); end;
+procedure CraftMind; begin log('Action: CraftMind'); end;
+procedure LeaveMind; begin log('Action: LeaveMind'); end;
+procedure CraftCosmic; begin log('Action: CraftCosmic'); end;
+procedure LeaveCosmic; begin log('Action: LeaveCosmic'); end;
+procedure CraftLaw; begin log('Action: CraftLaw'); end;
+procedure LeaveLaw; begin log('Action: LeaveLaw'); end;
+procedure CraftChaos; begin log('Action: CraftChaos'); end;
+procedure LeaveChaos; begin log('Action: LeaveChaos'); end;
+procedure CraftDeath; begin log('Action: CraftDeath'); end;
+procedure LeaveDeath; begin log('Action: LeaveDeath'); end;
+
+
+// --- HELPER FUNCTIONS ---
+function FormatXP(XP: Int64): String;
+var
+  s: String;
+  i, len: Integer;
+begin
+  s := IntToStr(XP);
+  len := Length(s);
+  Result := '';
+  for i := 1 to len do
+  begin
+    Result := Result + s[i];
+    if ((len - i) mod 3 = 0) and (i < len) then
+      Result := Result + ',';
+  end;
+end;
+
+function MsToTime(MS: Int64): string;
+var
+  h, m, s: Integer;
+begin
+  s := MS div 1000;
+  h := s div 3600;
+  m := (s mod 3600) div 60;
+  s := s mod 60;
+
+  Result := '';
+  if h < 10 then Result := Result + '0';
+  Result := Result + IntToStr(h) + ':';
+
+  if m < 10 then Result := Result + '0';
+  Result := Result + IntToStr(m) + ':';
+
+  if s < 10 then Result := Result + '0';
+  Result := Result + IntToStr(s);
+end;
+
+function LocateTextBounds(searchArea: TBox; searchText: String; colors: TColorArray; tolerance: Single; font: TPixelFont): TBoxArray;
+var
+  i: Integer;
+  pt: TPoint;
+  lines: TStringArray;
+begin
+  // Use RecognizeLines to populate OCR.Engine.Matches
+  lines := OCR.RecognizeLines(searchArea, font, colors, tolerance);
+
+  if OCR.Engine.Matches = [] then
+  begin
+    SetLength(Result, 0);
+    Exit;
+  end;
+
+  // Filter matches to only include those containing our search text
+  SetLength(Result, 0);
+  pt := searchArea.TopLeft;
+
+  for i := 0 to High(OCR.Engine.Matches) do
+  begin
+    if searchText in OCR.Engine.Matches[i].Text then
+    begin
+      SetLength(Result, Length(Result) + 1);
+      Result[High(Result)] := OCR.Engine.Matches[i].Bounds.Offset(pt);
+    end;
+  end;
+end;
+
+
+
+// --- CONDITION FUNCTIONS ---
+function IsBankOpen: Boolean; begin Result := False; end;
+function IsBankSeeable: Boolean; begin Result := False; end;
+function IsCraftingReady: Boolean; begin Result := False; end;
+function IsEntranceSeeable: Boolean; begin Result := False; end;
+function IsEssencesLeftAir: Boolean;
+begin Result := False; end;
+function IsEssencesLeftBlood: Boolean;
+begin
+Result := False; end;
+function IsEssencesLeftBody: Boolean;
+begin Result := False; end;
+function IsEssencesLeftChaos: Boolean;
+begin
+Result := False; end;
+function IsEssencesLeftCosmic: Boolean;
+begin
+Result := False; end;
+function IsEssencesLeftDeath: Boolean;
+begin Result := False; end;
+function IsEssencesLeftEarth: Boolean;
+begin Result := False; end;
+function IsEssencesLeftFire: Boolean;
+begin Result := False; end;
+function IsEssencesLeftLaw: Boolean;
+begin
+Result := False; end;
+function IsEssencesLeftMind: Boolean;
+begin
+Result := False; end;
+function IsEssencesLeftNature: Boolean;
+begin
+Result := False; end;
+function IsEssencesLeftWater: Boolean;
+begin Result := False; end;
+function IsFullOfEssences: Boolean;
+begin
+Result := False;
+end;
+function IsGameStarted: Boolean;
+begin
+  log('Placeholder IsGameStarted = True');
+  Result := True;
+end;
+
+function IsInAir: Boolean;
+begin
+Result := (GameState.GetRegion() = "11339");
+end;
+
+function IsInBankArea: Boolean;
+begin
+  Result := ((GameState.GetRegion() = "14484") and (GameState.GetTile().Y < 9483));
+end;
+
+function IsInBankAreaBeforeGame: Boolean;
+begin
+  Result := ((GameState.GetRegion() = "14484") and (GameState.GetTile().Y < 9483));
+  end;
+
+function IsInBlood: Boolean;
+begin
+Result := (GameState.GetRegion() = "12875");
+end;
+
+function IsInBody: Boolean;
+begin
+Result := (GameState.GetRegion() = "10059");
+end;
+
+function IsInChaos: Boolean;
+begin
+Result := (GameState.GetRegion() = "9035");
+end;
+
+function IsInCosmic: Boolean;
+begin
+Result := (GameState.GetRegion() = "8523");
+end;
+
+function IsInDeath: Boolean;
+begin
+Result := False;
+end;
+
+function IsInEarth: Boolean;
+begin
+Result := (GameState.GetRegion() = "10571");
+end;
+
+function IsInFire: Boolean;
+begin
+Result := (GameState.GetRegion() = "10315");
+end;
+
+
+function IsInLaw: Boolean;
+begin
+Result := False;
+end;
+
+function IsInMain: Boolean;
+begin
+  Result := ((GameState.GetRegion() = "14484") and (GameState.GetTile().Y >= 9483) and (GameState.GetTile().X < 3637) and (GameState.GetTile().X > 3593));
+end;
+
+function IsInMainBeforeGame: Boolean; begin Result := False; end;
+
+function IsInMind: Boolean;
+begin
+  Result := (GameState.GetRegion() = "11083");
+end;
+
+function IsInNature: Boolean;
+begin
+  Result := (GameState.GetRegion() = "9803");
+end;
+
+function IsInRemainsHuge: Boolean;
+begin
+  //Makes sure we are not moving as Tile detected during agility shortcut is within the Area although character still is not there
+  Result := ((GameState.GetRegion() = "14484") and (GameState.GetTile().X <=3593) and (not Minimap.IsPlayerMoving(230)));
+end;
+
+function IsInRemainsLarge: Boolean;
+begin
+  Result := ((GameState.GetRegion() = "14484") and (GameState.GetTile().X >= 3636));
+end;
+
+function IsInWater: Boolean;
+begin
+Result := (GameState.GetRegion() = "10827");
+end;
+
+function IsMainToPortalSoon: Boolean; begin Result := False; end;
+
+function IsMining: Boolean;
+var
+  Bounds: TBoxArray;
+  searchBounds: TBox;
+  TPA: TPointArray;
+  colorBounds: TBox;
+  TextSearchArea: TBox;
+begin
+  // Define the initial search bounds for Mining plugin info panel
+  searchBounds := Box(1, 1, 200, 420);
+
+  // Find all pixels with color $00FF00 (Green font of MiningPlugin) within these bounds
+  TPA := Target.FindColor($00FF00, 0, searchBounds);
+
+  if Length(TPA) > 0 then
+  begin
+    // Calculate the bounding box containing all found pixels
+    colorBounds := TPA.Bounds();
+
+    // Create the search area from the color bounds
+    TextSearchArea := colorBounds;
+
+    // Search for "Mining" text inside the dynamic bounding box
+    Bounds := LocateTextBounds(TextSearchArea, "Mining", [$00FF00], 0, RSFonts.PLAIN_12);
+
+    // Return True if we found at least one match
+    Result := (Length(Bounds) > 0);
+  end
+  else
+  begin
+    // No green pixels found, so we're not mining
+    Result := False;
+  end;
+end;
+
+function IsPortalBeforeGame: Boolean; begin Result := False; end;
+function IsProcessingReady: Boolean; begin Result := False; end;
+function IsReadyToEnter: Boolean; begin Result := False; end;
+function IsRemainsBeforeGame: Boolean; begin Result := False; end;
+
+function IsRemainsLargeToPortalSoon: Boolean;
+var
+  PortalPanelPluginBox: TBox;
+  Bounds: TBoxArray;
+  TPA: TPointArray;
+begin
+  // Defines for the larger area for the portal timer text.
+  PortalPanelPluginBox := Box(250, 50, (Target.Width div 2), 100);
+
+  // Finds the smaller overlay (dark border of plugin's info panel) for quicker OCR on main thread (need to keep TThread count <= 7)
+  TPA := Target.FindColor($2D3438, 10, PortalPanelPluginBox);
+
+  if Length(TPA) > 0 then
+    PortalPanelPluginBox := TPA.Bounds();
+
+  // Search for "Time to start" text inside the dynamic bounding box and gathere the bounds of its line (so we can search for time counting down)
+  Bounds := LocateTextBounds(PortalPanelPluginBox, 'Time to start', [$FFFFFF], 0, RSFonts.PLAIN_12);
+
+
+  Result :=False; //Placeholder while we code
+end;
+
+function IsRuneCraftingReady: Boolean; begin Result := False; end;
+function IsTimeToBank: Boolean; begin Result := False; end;
+function IsTimeToRepairInsideRoll: Boolean; begin Result := False; end;
+function IsTimeToRepairOutsideRoll: Boolean; begin Result := False; end;
+function IsToTurnIn: Boolean; begin Result := False; end;
+
+// --- FORWARD DECLARATIONS ---
+procedure ROOT_IsLoggedInNode; forward;
+procedure IsGameStartedNode; forward;
+procedure IsInBankAreaNode; forward;
+procedure IsInBankAreaBeforeGameNode; forward;
+procedure IsInMainNode; forward;
+procedure IsReadyToEnterNode; forward;
+procedure IsBankOpenNode; forward;
+procedure IsBankSeeableNode; forward;
+procedure IsTimeToRepairInsideRollNode; forward;
+procedure IsTimeToRepairOutsideRollNode; forward;
+procedure IsTimeToBankNode; forward;
+procedure IsEntranceSeeableNode; forward;
+procedure IsRemainsBeforeGameNode; forward;
+procedure IsInMainBeforeGameNode; forward;
+procedure IsPortalBeforeGameNode; forward;
+procedure IsToTurnInNode; forward;
+procedure IsProcessingReadyNode; forward;
+procedure IsMainToPortalSoonNode; forward;
+procedure IsRuneCraftingReadyNode; forward;
+procedure IsCraftingReadyNode; forward;
+procedure IsInRemainsLargeNode; forward;
+procedure IsRemainsLargeToPortalSoonNode; forward;
+procedure IsMiningNode; forward;
+procedure IsInRemainsHugeNode; forward;
+procedure IsFullOfEssencesNode; forward;
+procedure IsInEarthNode; forward;
+procedure IsEssencesLeftEarthNode; forward;
+procedure IsInAirNode; forward;
+procedure IsEssencesLeftAirNode; forward;
+procedure IsInWaterNode; forward;
+procedure IsEssencesLeftWaterNode; forward;
+procedure IsInBodyNode; forward;
+procedure IsEssencesLeftBodyNode; forward;
+procedure IsInFireNode; forward;
+procedure IsEssencesLeftFireNode; forward;
+procedure IsInNatureNode; forward;
+procedure IsEssencesLeftNatureNode; forward;
+procedure IsInBloodNode; forward;
+procedure IsEssencesLeftBloodNode; forward;
+procedure IsInMindNode; forward;
+procedure IsEssencesLeftMindNode; forward;
+procedure IsInCosmicNode; forward;
+procedure IsEssencesLeftCosmicNode; forward;
+procedure IsInLawNode; forward;
+procedure IsEssencesLeftLawNode; forward;
+procedure IsInChaosNode; forward;
+procedure IsEssencesLeftChaosNode; forward;
+procedure IsInDeathNode; forward;
+procedure IsEssencesLeftDeathNode; forward;
+
+// --- NODES ---
+
+// Altar Nodes
+procedure IsEssencesLeftDeathNode;
+begin
+  Condition := IsEssencesLeftDeath();
+  EvaluateNode('IsEssencesLeftDeathNode', Condition, @LeaveDeath, @CraftDeath);
+end;
+
+procedure IsInDeathNode;
+begin
+  Condition := IsInDeath();
+  EvaluateNode('IsInDeathNode', Condition, @IsEssencesLeftDeathNode, @ErrorMsg);
+end;
+
+procedure IsEssencesLeftChaosNode;
+begin
+  Condition := IsEssencesLeftChaos();
+  EvaluateNode('IsEssencesLeftChaosNode', Condition, @LeaveChaos, @CraftChaos);
+end;
+
+procedure IsInChaosNode;
+begin
+  Condition := IsInChaos();
+  EvaluateNode('IsInChaosNode', Condition, @IsEssencesLeftChaosNode, @IsInDeathNode);
+end;
+
+procedure IsEssencesLeftLawNode;
+begin
+  Condition := IsEssencesLeftLaw();
+  EvaluateNode('IsEssencesLeftLawNode', Condition, @LeaveLaw, @CraftLaw);
+end;
+
+procedure IsInLawNode;
+begin
+  Condition := IsInLaw();
+  EvaluateNode('IsInLawNode', Condition, @IsEssencesLeftLawNode, @IsInChaosNode);
+end;
+
+procedure IsEssencesLeftCosmicNode;
+begin
+  Condition := IsEssencesLeftCosmic();
+  EvaluateNode('IsEssencesLeftCosmicNode', Condition, @LeaveCosmic, @CraftCosmic);
+end;
+
+procedure IsInCosmicNode;
+begin
+  Condition := IsInCosmic();
+  EvaluateNode('IsInCosmicNode', Condition, @IsEssencesLeftCosmicNode, @IsInLawNode);
+end;
+
+procedure IsEssencesLeftMindNode;
+begin
+  Condition := IsEssencesLeftMind();
+  EvaluateNode('IsEssencesLeftMindNode', Condition, @LeaveMind, @CraftMind);
+end;
+
+procedure IsInMindNode;
+begin
+  Condition := IsInMind();
+  EvaluateNode('IsInMindNode', Condition, @IsEssencesLeftMindNode, @IsInCosmicNode);
+end;
+
+procedure IsEssencesLeftBloodNode;
+begin
+  Condition := IsEssencesLeftBlood();
+  EvaluateNode('IsEssencesLeftBloodNode', Condition, @LeaveBlood, @CraftBlood);
+end;
+
+procedure IsInBloodNode;
+begin
+  Condition := IsInBlood();
+  EvaluateNode('IsInBloodNode', Condition, @IsEssencesLeftBloodNode, @IsInMindNode);
+end;
+
+procedure IsEssencesLeftNatureNode;
+begin
+  Condition := IsEssencesLeftNature();
+  EvaluateNode('IsEssencesLeftNatureNode', Condition, @LeaveNature, @CraftNature);
+end;
+
+procedure IsInNatureNode;
+begin
+  Condition := IsInNature();
+  EvaluateNode('IsInNatureNode', Condition, @IsEssencesLeftNatureNode, @IsInBloodNode);
+end;
+
+procedure IsEssencesLeftFireNode;
+begin
+  Condition := IsEssencesLeftFire();
+  EvaluateNode('IsEssencesLeftFireNode', Condition, @LeaveFire, @CraftFire);
+end;
+
+procedure IsInFireNode;
+begin
+  Condition := IsInFire();
+  EvaluateNode('IsInFireNode', Condition, @IsEssencesLeftFireNode, @IsInNatureNode);
+end;
+
+procedure IsEssencesLeftBodyNode;
+begin
+  Condition := IsEssencesLeftBody();
+  EvaluateNode('IsEssencesLeftBodyNode', Condition, @LeaveBody, @CraftBody);
+end;
+
+procedure IsInBodyNode;
+begin
+  Condition := IsInBody();
+  EvaluateNode('IsInBodyNode', Condition, @IsEssencesLeftBodyNode, @IsInFireNode);
+end;
+
+procedure IsEssencesLeftWaterNode;
+begin
+  Condition := IsEssencesLeftWater();
+  EvaluateNode('IsEssencesLeftWaterNode', Condition, @LeaveWater, @CraftWater);
+end;
+
+procedure IsInWaterNode;
+begin
+  Condition := IsInWater();
+  EvaluateNode('IsInWaterNode', Condition, @IsEssencesLeftWaterNode, @IsInBodyNode);
+end;
+
+procedure IsEssencesLeftAirNode;
+begin
+  Condition := IsEssencesLeftAir();
+  EvaluateNode('IsEssencesLeftAirNode', Condition, @LeaveAir, @CraftAir);
+end;
+
+procedure IsInAirNode;
+begin
+  Condition := IsInAir();
+  EvaluateNode('IsInAirNode', Condition, @IsEssencesLeftAirNode, @IsInWaterNode);
+end;
+
+procedure IsEssencesLeftEarthNode;
+begin
+  Condition := IsEssencesLeftEarth();
+  EvaluateNode('IsEssencesLeftEarthNode', Condition, @LeaveEarth, @CraftEarth);
+end;
+
+procedure IsInEarthNode;
+begin
+  Condition := IsInEarth();
+  EvaluateNode('IsInEarthNode', Condition, @IsEssencesLeftEarthNode, @IsInAirNode);
+end;
+
+// Mining / Remains Nodes
+procedure IsFullOfEssencesNode;
+begin
+  Condition := IsFullOfEssences();
+  EvaluateNode('IsFullOfEssencesNode', Condition, @IsMiningNode, @LeaveThroughPortal);
+end;
+
+procedure IsInRemainsHugeNode;
+begin
+  Condition := IsInRemainsHuge();
+  EvaluateNode('IsInRemainsHugeNode', Condition, @IsInEarthNode, @IsFullOfEssencesNode);
+end;
+
+procedure IsMiningNode;
+begin
+  Condition := IsMining();
+  EvaluateNode('IsMiningNode', Condition, @StartMining, @AntibanWhileMining);
+end;
+
+procedure IsRemainsLargeToPortalSoonNode;
+begin
+  Condition := IsRemainsLargeToPortalSoon();
+  EvaluateNode('IsRemainsLargeToPortalSoonNode', Condition, @IsMiningNode, @ClimbRubbleUp);
+end;
+
+procedure IsInRemainsLargeNode;
+begin
+  Condition := IsInRemainsLarge();
+  EvaluateNode('IsInRemainsLargeNode', Condition, @IsInRemainsHugeNode, @IsRemainsLargeToPortalSoonNode);
+end;
+
+// Crafting / Main Nodes
+procedure IsCraftingReadyNode;
+begin
+  Condition := IsCraftingReady();
+  EvaluateNode('IsCraftingReadyNode', Condition, @HandleWorkshop, @LogWeird);
+end;
+
+procedure IsRuneCraftingReadyNode;
+begin
+  Condition := IsRuneCraftingReady();
+  EvaluateNode('IsRuneCraftingReadyNode', Condition, @HandleWorkshop, @IsCraftingReadyNode);
+end;
+
+procedure IsMainToPortalSoonNode;
+begin
+  Condition := IsMainToPortalSoon();
+  EvaluateNode('IsMainToPortalSoonNode', Condition, @AntibanUntilPortal, @ClimbRubbleDown);
+end;
+
+procedure IsProcessingReadyNode;
+begin
+  Condition := IsProcessingReady();
+  EvaluateNode('IsProcessingReadyNode', Condition, @IsMainToPortalSoonNode, @IsRuneCraftingReadyNode);
+end;
+
+procedure IsToTurnInNode;
+begin
+  Condition := IsToTurnIn();
+  EvaluateNode('IsToTurnInNode', Condition, @IsProcessingReadyNode, @EmpowerGuardian);
+end;
+
+procedure IsInMainNode;
+begin
+  Condition := IsInMain();
+  EvaluateNode('IsInMainNode', Condition, @IsInRemainsLargeNode, @IsToTurnInNode);
+end;
+
+// Bank / Entrance Nodes (Game Started)
+procedure IsBankSeeableNode;
+begin
+  Condition := IsBankSeeable();
+  EvaluateNode('IsBankSeeableNode', Condition, @LookAtBank, @OpenBank);
+end;
+
+procedure IsBankOpenNode;
+begin
+  Condition := IsBankOpen();
+  EvaluateNode('IsBankOpenNode', Condition, @IsBankSeeableNode, @HandleSupplies);
+end;
+
+procedure IsEntranceSeeableNode;
+begin
+  Condition := IsEntranceSeeable();
+  EvaluateNode('IsEntranceSeeableNode', Condition, @LookAtEntrance, @EnterMinigame);
+end;
+
+procedure IsReadyToEnterNode;
+begin
+  Condition := IsReadyToEnter();
+  EvaluateNode('IsReadyToEnterNode', Condition, @IsBankOpenNode, @IsEntranceSeeableNode);
+end;
+
+procedure IsInBankAreaNode;
+begin
+  Condition := IsInBankArea();
+  EvaluateNode('IsInBankAreaNode', Condition, @IsInMainNode, @IsReadyToEnterNode);
+end;
+
+// Before Game Nodes
+procedure IsPortalBeforeGameNode;
+begin
+  Condition := IsPortalBeforeGame();
+  EvaluateNode('IsPortalBeforeGameNode', Condition, @ErrorMsg, @PortalLeaveBeforeGame);
+end;
+
+procedure IsInMainBeforeGameNode;
+begin
+  Condition := IsInMainBeforeGame();
+  EvaluateNode('IsInMainBeforeGameNode', Condition, @IsPortalBeforeGameNode, @ClimbRubbleDown);
+end;
+
+procedure IsRemainsBeforeGameNode;
+begin
+  Condition := IsRemainsBeforeGame();
+  EvaluateNode('IsRemainsBeforeGameNode', Condition, @IsInMainBeforeGameNode, @AntibanWaitForStart);
+end;
+
+procedure IsTimeToBankNode;
+begin
+  Condition := IsTimeToBank();
+  EvaluateNode('IsTimeToBankNode', Condition, @IsEntranceSeeableNode, @IsBankOpenNode);
+end;
+
+procedure IsTimeToRepairOutsideRollNode;
+begin
+  Condition := IsTimeToRepairOutsideRoll();
+  EvaluateNode('IsTimeToRepairOutsideRollNode', Condition, @IsTimeToBankNode, @ContactNPCRepair);
+end;
+
+procedure IsTimeToRepairInsideRollNode;
+begin
+  Condition := IsTimeToRepairInsideRoll();
+  EvaluateNode('IsTimeToRepairInsideRollNode', Condition, @IsRemainsBeforeGameNode, @ContactNPCRepair);
+end;
+
+procedure IsInBankAreaBeforeGameNode;
+begin
+  Condition := IsInBankAreaBeforeGame();
+  EvaluateNode('IsInBankAreaBeforeGameNode', Condition, @IsTimeToRepairInsideRollNode, @IsTimeToRepairOutsideRollNode);
+end;
+
+// Root Nodes
+procedure IsGameStartedNode;
+begin
+  if (XPBar.Size = ERSXPBarSize.UNKNOWN) and (XPBar.SetupAttempts < 3) then
+    XPBar.Setup();
+
+  Condition := IsGameStarted();
+  EvaluateNode('IsGameStartedNode', Condition, @IsInBankAreaBeforeGameNode, @IsInBankAreaNode);
+end;
+
+procedure ROOT_IsLoggedInNode;
+begin
+  Condition := GameState.IsLoggedIn();
+  EvaluateNode('ROOT_IsLoggedInNode', Condition, @HandleLoginAndBreaks, @IsGameStartedNode);
+end;
+
+// -- GUI SECTION --
+var
+  // UI Components
+  cbAirRune, cbMindRune, cbWaterRune, cbEarthRune, cbFireRune, cbBodyRune,
+    cbCosmicRune, cbChaosRune, cbNatureRune, cbLawRune, cbDeathRune, cbBloodRune: TLazCheckBox;
+  cbSmallPouch, cbMediumPouch, cbLargePouch, cbGiantPouch, cbColossalPouch: TLazCheckBox;
+  cbBindingNecklace, cbHighestLvlRune, cbHighestPoints: TLazCheckBox;
+
+type
+  TUIHandler = record
+    _Dummy: Integer;
+  end;
+
+var
+  UIHandler: TUIHandler;
+
+procedure TUIHandler.OnMethodCheck(Sender: TLazObject);
+begin
+  if TLazCheckBox(Sender).isChecked then
+  begin
+    if Sender <> cbBindingNecklace then cbBindingNecklace.setChecked(False);
+    if Sender <> cbHighestLvlRune then cbHighestLvlRune.setChecked(False);
+    if Sender <> cbHighestPoints then cbHighestPoints.setChecked(False);
+  end;
+end;
+
+procedure TScriptForm.OnStart(sender: TLazObject); override;
+begin
+
+  // --- SETTINGS LOGIC (Stays Here) ---
+  // Runes
+  Settings.CraftAir := cbAirRune.isChecked();
+  Settings.CraftMind := cbMindRune.isChecked();
+  Settings.CraftWater := cbWaterRune.isChecked();
+  Settings.CraftEarth := cbEarthRune.isChecked();
+  Settings.CraftFire := cbFireRune.isChecked();
+  Settings.CraftBody := cbBodyRune.isChecked();
+  Settings.CraftCosmic := cbCosmicRune.isChecked();
+  Settings.CraftChaos := cbChaosRune.isChecked();
+  Settings.CraftNature := cbNatureRune.isChecked();
+  Settings.CraftLaw := cbLawRune.isChecked();
+  Settings.CraftDeath := cbDeathRune.isChecked();
+  Settings.CraftBlood := cbBloodRune.isChecked();
+
+  // Pouches
+  Settings.UseSmall := cbSmallPouch.isChecked();
+  Settings.UseMedium := cbMediumPouch.isChecked();
+  Settings.UseLarge := cbLargePouch.isChecked();
+  Settings.UseGiant := cbGiantPouch.isChecked();
+  Settings.UseColossal := cbColossalPouch.isChecked();
+
+  // Runecrafting Method
+  Settings.UseBindingNecklace := cbBindingNecklace.isChecked();
+  Settings.UseHighestLvlRune := cbHighestLvlRune.isChecked();
+  Settings.UseHighestPoints := cbHighestPoints.isChecked();
+
+  // Initialize runtime snapshot
+  InitialRuntimeSnapshot := Settings.TotalRuntime;
+  InitialTotalXP := Settings.TotalXP;
+  InitialRunecraftingXP := Settings.TotalRunecraftingXP;
+  InitialMagicXP := Settings.TotalMagicXP;
+  InitialMiningXP := Settings.TotalMiningXP;
+  InitialCraftingXP := Settings.TotalCraftingXP;
+
+  // --- SAVE CONFIG (Stays Here) ---
+  if not SaveSettings(Settings, SETTINGS_PATH) then
+    log('Failed to save settings to ' + SETTINGS_PATH);
+
+
+  // Signal the main script block to start execution and close the GUI
+
+  Self.Form.OnClose := nil;
+  Self.Form.Close;
+end;
+
+
+procedure SetDefaultSettings;
+begin
+  // This procedure sets all settings to a default value
+  Settings.CraftAir := False; Settings.CraftMind := False; Settings.CraftWater := False;
+  Settings.CraftEarth := False; Settings.CraftFire := False; Settings.CraftBody := False;
+  Settings.CraftCosmic := False; Settings.CraftChaos := False; Settings.CraftNature := False;
+  Settings.CraftLaw := False; Settings.CraftDeath := False; Settings.CraftBlood := False;
+  Settings.UseSmall := False; Settings.UseMedium := False; Settings.UseLarge := False;
+  Settings.UseGiant := False; Settings.UseColossal := False;
+  Settings.UseBindingNecklace := False; Settings.UseHighestLvlRune := False; Settings.UseHighestPoints := True;
+  Settings.TotalRuntime := 0;
+  Settings.TotalXP := 0;
+  Settings.TotalRunecraftingXP := 0;
+  Settings.TotalMagicXP := 0;
+  Settings.TotalMiningXP := 0;
+  Settings.TotalCraftingXP := 0;
+  Settings.LastRuntime := 0;
+  Settings.LastTotalXP := 0;
+  Settings.LastRunecraftingXP := 0;
+  Settings.LastMagicXP := 0;
+  Settings.LastMiningXP := 0;
+  Settings.LastCraftingXP := 0;
+end;
+
+procedure TScriptForm.Init;
+var
+  tab: TLazTabSheet;
+  runePanel, pouchPanel, methodPanel, statsPanel: TLazPanel;
+  lbl: TLazLabel;
+
+  procedure InitCheck(var CB: TLazCheckBox; Panel: TLazPanel; Name, Key: String; Top: Integer; DefaultValue: Boolean);
+  begin
+    CB := TLazCheckBox.CreateEx(Panel, Name);
+    CB.Left := 10;
+    CB.Top := Top;
+    CB.setChecked(DefaultValue);
+  end;
+
+begin
+  // Initialize settings to default values first
+  SetDefaultSettings;
+  // Attempt to load settings from file, overwriting defaults if successful
+  if not LoadSettings(Settings, SETTINGS_PATH) then
+  begin
+    log('Settings file not found or failed to load. Using default values.');
+    // Optionally, you could create a default settings file here
+    // SaveSettings(Settings, SETTINGS_PATH);
+  end;
+  tab := Self.CreateTab('Script Settings');
+
+  // Rune Panel (Left)
+  runePanel := TLazPanel.CreateEx(tab);
+  runePanel.Left := 5;
+  runePanel.Top := 5;
+  runePanel.Width := 180;
+  runePanel.Height := 340;
+  runePanel.Caption := '';
+
+  lbl := TLazLabel.CreateEx(runePanel);
+  lbl.Caption := 'Runes to Craft';
+  lbl.Left := 10;
+  lbl.Top := 5;
+  lbl.Font.Name := 'Arial Black';
+  lbl.Font.Size := 11;
+
+
+  InitCheck(cbAirRune, runePanel, 'Air Rune', 'craft_air', 35, Settings.CraftAir);
+  InitCheck(cbMindRune, runePanel, 'Mind Rune', 'craft_mind', 60, Settings.CraftMind);
+  InitCheck(cbWaterRune, runePanel, 'Water Rune', 'craft_water', 85, Settings.CraftWater);
+  InitCheck(cbEarthRune, runePanel, 'Earth Rune', 'craft_earth', 110, Settings.CraftEarth);
+  InitCheck(cbFireRune, runePanel, 'Fire Rune', 'craft_fire', 135, Settings.CraftFire);
+  InitCheck(cbBodyRune, runePanel, 'Body Rune', 'craft_body', 160, Settings.CraftBody);
+  InitCheck(cbCosmicRune, runePanel, 'Cosmic Rune', 'craft_cosmic', 185, Settings.CraftCosmic);
+  InitCheck(cbChaosRune, runePanel, 'Chaos Rune', 'craft_chaos', 210, Settings.CraftChaos);
+  InitCheck(cbNatureRune, runePanel, 'Nature Rune', 'craft_nature', 235, Settings.CraftNature);
+  InitCheck(cbLawRune, runePanel, 'Law Rune', 'craft_law', 260, Settings.CraftLaw);
+  InitCheck(cbDeathRune, runePanel, 'Death Rune', 'craft_death', 285, Settings.CraftDeath);
+  InitCheck(cbBloodRune, runePanel, 'Blood Rune', 'craft_blood', 310, Settings.CraftBlood);
+
+  // Pouch Panel (Right)
+  pouchPanel := TLazPanel.CreateEx(tab);
+  pouchPanel.Left := 200;
+  pouchPanel.Top := 5;
+  pouchPanel.Width := 180;
+  pouchPanel.Height := 340;
+  pouchPanel.Caption := '';
+
+  lbl := TLazLabel.CreateEx(pouchPanel);
+  lbl.Caption := 'Pouches to Use';
+  lbl.Left := 10;
+  lbl.Top := 5;
+  lbl.Font.Name := 'Arial Black';
+  lbl.Font.Size := 11;
+
+
+  InitCheck(cbSmallPouch, pouchPanel, 'Small Pouch', 'use_small_pouch', 35, Settings.UseSmall);
+  InitCheck(cbMediumPouch, pouchPanel, 'Medium Pouch', 'use_medium_pouch', 60, Settings.UseMedium);
+  InitCheck(cbLargePouch, pouchPanel, 'Large Pouch', 'use_large_pouch', 85, Settings.UseLarge);
+  InitCheck(cbGiantPouch, pouchPanel, 'Giant Pouch', 'use_giant_pouch', 110, Settings.UseGiant);
+  InitCheck(cbColossalPouch, pouchPanel, 'Colossal Pouch', 'use_colossal_pouch', 135, Settings.UseColossal);
+
+  // Runecrafting Method Panel (Middle)
+  methodPanel := TLazPanel.CreateEx(tab);
+  methodPanel.Left := 395;
+  methodPanel.Top := 5;
+  methodPanel.Width := 180;
+  methodPanel.Height := 340;
+  methodPanel.Caption := '';
+
+  lbl := TLazLabel.CreateEx(methodPanel);
+  lbl.Caption := 'RCing method';
+  lbl.Left := 10;
+  lbl.Top := 5;
+  lbl.Font.Name := 'Arial Black';
+  lbl.Font.Size := 11;
+
+
+  cbBindingNecklace := TLazCheckBox.CreateEx(methodPanel, 'Binding necklace');
+  cbBindingNecklace.Left := 10;
+  cbBindingNecklace.Top := 35;
+  cbBindingNecklace.setChecked(Settings.UseBindingNecklace);
+  cbBindingNecklace.OnChange := @UIHandler.OnMethodCheck;
+
+  cbHighestLvlRune := TLazCheckBox.CreateEx(methodPanel, 'Highest lvl rune');
+  cbHighestLvlRune.Left := 10;
+  cbHighestLvlRune.Top := 60;
+  cbHighestLvlRune.setChecked(Settings.UseHighestLvlRune);
+  cbHighestLvlRune.OnChange := @UIHandler.OnMethodCheck;
+
+  cbHighestPoints := TLazCheckBox.CreateEx(methodPanel, 'Highest amount of points');
+  cbHighestPoints.Left := 10;
+  cbHighestPoints.Top := 85;
+  cbHighestPoints.setChecked(Settings.UseHighestPoints);
+  cbHighestPoints.OnChange := @UIHandler.OnMethodCheck;
+
+  // Statistics Panel (Rightmost)
+  statsPanel := TLazPanel.CreateEx(tab);
+  statsPanel.Left := 590;
+  statsPanel.Top := 5;
+  statsPanel.Width := 180;
+  statsPanel.Height := 340;
+  statsPanel.Caption := '';
+
+  lbl := TLazLabel.CreateEx(statsPanel);
+  lbl.Caption := 'Statistics';
+  lbl.Left := 10;
+  lbl.Top := 5;
+  lbl.Font.Name := 'Arial Black';
+  lbl.Font.Size := 11;
+
+
+  lbl := TLazLabel.CreateEx(statsPanel);
+  lbl.Caption := 'Total Runtime: ' + MsToTime(Settings.TotalRuntime);
+  lbl.Left := 10;
+  lbl.Top := 35;
+  lbl.Font.Name := 'Arial';
+  lbl.Font.Size := 10;
+
+  lbl := TLazLabel.CreateEx(statsPanel);
+  lbl.Caption := 'Total XP: ' + FormatXP(Settings.TotalXP);
+  lbl.Left := 10;
+  lbl.Top := 60;
+  lbl.Font.Name := 'Arial';
+  lbl.Font.Size := 10;
+
+  lbl := TLazLabel.CreateEx(statsPanel);
+  lbl.Caption := 'Total RC XP: ' + FormatXP(Settings.TotalRunecraftingXP);
+  lbl.Left := 10;
+  lbl.Top := 85;
+  lbl.Font.Name := 'Arial';
+  lbl.Font.Size := 10;
+
+  lbl := TLazLabel.CreateEx(statsPanel);
+  lbl.Caption := 'Total Magic XP: ' + FormatXP(Settings.TotalMagicXP);
+  lbl.Left := 10;
+  lbl.Top := 110;
+  lbl.Font.Name := 'Arial';
+  lbl.Font.Size := 10;
+
+  lbl := TLazLabel.CreateEx(statsPanel);
+  lbl.Caption := 'Total Mining XP: ' + FormatXP(Settings.TotalMiningXP);
+  lbl.Left := 10;
+  lbl.Top := 135;
+  lbl.Font.Name := 'Arial';
+  lbl.Font.Size := 10;
+
+  lbl := TLazLabel.CreateEx(statsPanel);
+  lbl.Caption := 'Total Crafting XP: ' + FormatXP(Settings.TotalCraftingXP);
+  lbl.Left := 10;
+  lbl.Top := 160;
+  lbl.Font.Name := 'Arial';
+  lbl.Font.Size := 10;
+
+
+  lbl := TLazLabel.CreateEx(statsPanel);
+  lbl.Caption := 'Last Runtime: ' + MsToTime(Settings.LastRuntime);
+  lbl.Left := 10;
+  lbl.Top := 185;
+  lbl.Font.Name := 'Arial';
+  lbl.Font.Size := 10;
+
+  lbl := TLazLabel.CreateEx(statsPanel);
+  lbl.Caption := 'Last Total XP: ' + FormatXP(Settings.LastTotalXP);
+  lbl.Left := 10;
+  lbl.Top := 210;
+  lbl.Font.Name := 'Arial';
+  lbl.Font.Size := 10;
+
+  lbl := TLazLabel.CreateEx(statsPanel);
+  lbl.Caption := 'Last RC XP: ' + FormatXP(Settings.LastRunecraftingXP);
+  lbl.Left := 10;
+  lbl.Top := 235;
+  lbl.Font.Name := 'Arial';
+  lbl.Font.Size := 10;
+
+  lbl := TLazLabel.CreateEx(statsPanel);
+  lbl.Caption := 'Last Magic XP: ' + FormatXP(Settings.LastMagicXP);
+  lbl.Left := 10;
+  lbl.Top := 260;
+  lbl.Font.Name := 'Arial';
+  lbl.Font.Size := 10;
+
+  lbl := TLazLabel.CreateEx(statsPanel);
+  lbl.Caption := 'Last Mining XP: ' + FormatXP(Settings.LastMiningXP);
+  lbl.Left := 10;
+  lbl.Top := 285;
+  lbl.Font.Name := 'Arial';
+  lbl.Font.Size := 10;
+
+  lbl := TLazLabel.CreateEx(statsPanel);
+  lbl.Caption := 'Last Crafting XP: ' + FormatXP(Settings.LastCraftingXP);
+  lbl.Left := 10;
+  lbl.Top := 310;
+  lbl.Font.Name := 'Arial';
+  lbl.Font.Size := 10;
+
+  Self.Run;
+end;
+
+procedure Cleanup;
+var
+  EndXP, TotalGainedXP: Integer;
+begin
+  // 1. Terminate and Free Stats Thread
+  if StatsThreadInstance <> nil then
+  begin
+    try
+      StatsThreadInstance.Terminate;
+      StatsThreadInstance.WaitForTerminate;
+    except
+      log('Error terminating StatsThread');
+    end;
+
+    try
+      StatsThreadInstance.Free;
+      StatsThreadInstance := nil;
+    except
+      log('Error freeing StatsThread');
+    end;
+  end;
+
+  // 2. Terminate and Free GameStateAnalyzer
+  try
+    GameStateAnalyzer_Terminate;
+    GameStateAnalyzer_WaitFor;
+  except
+    log('Error terminating GameStateAnalyzer');
+  end;
+
+  try
+    GameStateAnalyzer_Free;
+  except
+    log('Error freeing GameStateAnalyzer');
+  end;
+
+  // 3. Save Settings
+  try
+    Settings.LastRuntime := GetTimeRunning();
+
+    try
+      EndXP := GameState.GetXP();
+      if EndXP > 0 then
+      begin
+        TotalGainedXP := EndXP - StartXP;
+        if TotalGainedXP < 0 then TotalGainedXP := 0; // Sanity check
+
+        Settings.LastTotalXP := TotalGainedXP;
+        Settings.TotalXP := Settings.TotalXP + TotalGainedXP;
+
+        Settings.LastMiningXP := GameState.GetMiningXP();
+        Settings.LastMagicXP := GameState.GetMagicXP();
+        Settings.LastCraftingXP := GameState.GetCraftingXP();
+
+        Settings.LastRunecraftingXP := TotalGainedXP - GameState.GetMagicXP() - Settings.LastMiningXP - Settings.LastCraftingXP;
+        if Settings.LastRunecraftingXP < 0 then Settings.LastRunecraftingXP := 0; // Sanity check
+
+        Settings.TotalRunecraftingXP := Settings.TotalRunecraftingXP + Settings.LastRunecraftingXP;
+        Settings.TotalMagicXP := Settings.TotalMagicXP + Settings.LastMagicXP;
+        Settings.TotalMiningXP := Settings.TotalMiningXP + Settings.LastMiningXP;
+        Settings.TotalCraftingXP := Settings.TotalCraftingXP + Settings.LastCraftingXP;
+      end;
+    except
+      log('Could not read final XP stats (Client likely closed)');
+    end;
+
+    // Persist final stats
+    SaveSettings(Settings, SETTINGS_PATH);
+  except
+    log('Error saving settings during cleanup');
+  end;
+
+  // 4. Free Locks
+  if StatsLock <> nil then
+  begin
+    try
+      StatsLock.Free;
+      StatsLock := nil;
+    except
+      log('Error freeing StatsLock');
+    end;
+  end;
+
+  if GameStateLock <> nil then
+  begin
+    try
+      GameStateLock.Free;
+      GameStateLock := nil;
+    except
+      log('Error freeing GameStateLock');
+    end;
+  end;
+end;
+
+procedure Initialize;
+begin
+  // Register cleanup immediately so locks are freed if initialization fails
+  AddOnTerminate(@Cleanup);
+
+  XPBar.Setup();
+
+  ClearSimbaOutput;
+  RSClient.EnableRealInput(); //ALLOW FOR MOUSE INPUT
+  MouseDefaultSpeed := Random(14,15);  //Real default is 12, but we like speed :)
+
+  StartXP := XPBar.Tracker.Current;
+  GameState.FXP := StartXP;
+  GameState.FMiningXP := 0;
+  GameState.FCraftingXP := 0;
+  GameState.FMagicXP := 0;
+
+  GameStateLock := TLock.Create();
+  GameStateAnalyzer_Init;
+  GameStateAnalyzer_Start;
+
+  StatsLock := TLock.Create();
+  StatsThreadInstance := TThread.Create(@RunStatsThread);
+
+  DeclarePlayaz;
+
+  //BMPs declaration, don't forget to clean memory AddOnTerminate
+  //PortalArrow := BitmapFromString(3, 4, 'meJxT+v5LCQdiZGCAIACmChKv');
+end;
+
+procedure RunMainLoop;
+begin
+  repeat
+    ROOT_IsLoggedInNode;
+  until False;
+end;
+
+begin
+
+   Form.Setup('GOATER');
+   Form.Init();
+   Initialize;
+   RunMainLoop();
+end.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

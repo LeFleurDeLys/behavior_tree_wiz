@@ -1160,6 +1160,7 @@ type
     RunningChildIndex: Integer;
     ConditionCheckMask: array of Boolean;
     LastActivityTimestamp: Double;
+    WatchedKey: String;
   end;
 
   TBTDataGathererNode = record
@@ -2931,14 +2932,18 @@ Use these for dynamic behavior that needs to respond to changing conditions.
 function TBehaviorTree.CreateReactiveSelector(Name: String; Children: TBTNodeHandleArray = []): TBTNodeHandle;
 ```
 Creates a reactive selector that interrupts on blackboard changes.
+When WatchedKey is provided, only interrupts when that specific blackboard key changes.
+When WatchedKey is empty (default), interrupts on any blackboard change.
 
 Example:
 ```pascal
+// Reacts to ALL blackboard changes:
 ReactiveSelector := MyTree.CreateReactiveSelector('Reactive Combat', [Health, Combat, Heal]);
-ReactiveSelector := MyTree.CreateReactiveSelector('Empty Reactive'); // Empty reactive selector
+// Reacts ONLY to changes on the 'Health' key:
+ReactiveSelector := MyTree.CreateReactiveSelector('Reactive Combat', [Health, Combat, Heal], 'Health');
 ```
 *)
-function TBehaviorTree.CreateReactiveSelector(Name: String; Children: TBTNodeHandleArray = []): TBTNodeHandle;
+function TBehaviorTree.CreateReactiveSelector(Name: String; Children: TBTNodeHandleArray = []; WatchedKey: String = ''): TBTNodeHandle;
 var
   Node: ^TBTReactiveNode;
   i: Integer;
@@ -2947,7 +2952,8 @@ begin
   Node^.Base.Name := Name;
   Node^.Children := Children;
   Node^.RunningChildIndex := -1;
-  Node^.LastActivityTimestamp := 0;  
+  Node^.LastActivityTimestamp := 0;
+  Node^.WatchedKey := WatchedKey;  
   
   SetLength(Node^.ConditionCheckMask, Length(Children));
   SetLength(Node^.LastConditionStates, Length(Children));
@@ -2974,14 +2980,18 @@ end;
 function TBehaviorTree.CreateReactiveSequence(Name: String; Children: TBTNodeHandleArray = []): TBTNodeHandle;
 ```
 Creates a reactive sequence that interrupts on blackboard changes.
+When WatchedKey is provided, only interrupts when that specific blackboard key changes.
+When WatchedKey is empty (default), interrupts on any blackboard change.
 
 Example:
 ```pascal
+// Reacts to ALL blackboard changes:
 ReactiveSequence := MyTree.CreateReactiveSequence('Reactive Combat', [Check, Approach, Attack]);
-ReactiveSequence := MyTree.CreateReactiveSequence('Empty Reactive Seq'); // Empty reactive sequence
+// Reacts ONLY to changes on the 'Health' key:
+ReactiveSequence := MyTree.CreateReactiveSequence('Reactive Combat', [Check, Approach, Attack], 'Health');
 ```
 *)
-function TBehaviorTree.CreateReactiveSequence(Name: String; Children: TBTNodeHandleArray = []): TBTNodeHandle;
+function TBehaviorTree.CreateReactiveSequence(Name: String; Children: TBTNodeHandleArray = []; WatchedKey: String = ''): TBTNodeHandle;
 var
   Node: ^TBTReactiveNode;
   i: Integer;
@@ -2990,7 +3000,8 @@ begin
   Node^.Base.Name := Name;
   Node^.Children := Children;
   Node^.RunningChildIndex := -1;
-  Node^.LastActivityTimestamp := 0;  
+  Node^.LastActivityTimestamp := 0;
+  Node^.WatchedKey := WatchedKey;  
   
   SetLength(Node^.ConditionCheckMask, Length(Children));
   SetLength(Node^.LastConditionStates, Length(Children));
@@ -3092,12 +3103,17 @@ begin
   ActivityChanges := Self.Blackboard.GetActivitySince(LastTimestamp);
   RelevantChanges := 0;
   for i := 0 to High(ActivityChanges) do
+  begin
     if ActivityChanges[i].ChangeType <> EBBChangeType.Read then
-      Inc(RelevantChanges);
+    begin
+      if (ReactiveNode^.WatchedKey = '') or (ActivityChanges[i].Key = ReactiveNode^.WatchedKey) then
+        Inc(RelevantChanges);
+    end;
+  end;
 
   if Self.DebugLevel >= EBTDebugLevel.Verbose then
-    WriteLn(Format('[REACTIVE] %s: LastTimestamp=%.6f, CurrentTime=%.6f, Found %d total activities, %d relevant changes, RunningChildIndex=%d', 
-      [ReactiveNode^.Base.Name, LastTimestamp, CurrentTime, Length(ActivityChanges), RelevantChanges, ReactiveNode^.RunningChildIndex]));
+    WriteLn(Format('[REACTIVE] %s: WatchedKey=%s, LastTimestamp=%.6f, CurrentTime=%.6f, Found %d total activities, %d relevant changes, RunningChildIndex=%d', 
+      [ReactiveNode^.Base.Name, ReactiveNode^.WatchedKey, LastTimestamp, CurrentTime, Length(ActivityChanges), RelevantChanges, ReactiveNode^.RunningChildIndex]));
 
   MustRestart := (ReactiveNode^.RunningChildIndex > -1) and (RelevantChanges > 0);
   if MustRestart then

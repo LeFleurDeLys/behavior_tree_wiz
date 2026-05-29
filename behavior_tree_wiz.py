@@ -12,7 +12,7 @@ from typing import List, Dict, Optional, Any
 # ==========================================
 
 class BTNode:
-    def __init__(self, node_id: str, label: str, node_type: str, geometry_x: float = 0, geometry_y: float = 0, has_memory: bool = False):
+    def __init__(self, node_id: str, label: str, node_type: str, geometry_x: float = 0, geometry_y: float = 0, has_memory: bool = False, watched_key: Optional[str] = None):
         self.id = node_id
         self.label = label
         self.node_type = node_type  # 'Selector', 'Sequence', 'Condition', 'Action', 'Root', 'RandomSelector', 'WeightedSelector'
@@ -27,6 +27,7 @@ class BTNode:
         self.repeat_count: Optional[int] = None
         self.condition_reference: Optional[str] = None
         self.decorator_raw_param: Optional[str] = None
+        self.watched_key: Optional[str] = watched_key
 
     def add_child(self, child: 'BTNode', weight: float = 0.0):
         self.children.append(child)
@@ -231,6 +232,29 @@ class WeightedSelectorStrategy(GenerationStrategy):
         simba_code += f"\n{indent}], [{weights_str}])"
         return simba_code
 
+class ReactiveCompositeStrategy(GenerationStrategy):
+    def __init__(self, method_name: str):
+        self.method_name = method_name
+
+    def generate(self, node: BTNode, generator_ref: 'SimbaGenerator', indent_level: int) -> str:
+        indent = "  " * indent_level
+        display_name = node.label.replace("'", "''")
+        bb_key = node.watched_key.replace("'", "''") if node.watched_key else None
+
+        simba_code = f"{indent}Self.Tree.{self.method_name}('{display_name}', [\n"
+
+        child_codes = []
+        for child in node.children:
+            child_codes.append(generator_ref.generate_node(child, indent_level + 1))
+
+        simba_code += ",\n\n".join(child_codes)
+
+        if bb_key is not None:
+            simba_code += f"\n{indent}], '{bb_key}')"
+        else:
+            simba_code += f"\n{indent}])"
+        return simba_code
+
 class NodeFactory:
     _strategies = {
         'Selector': CompositeStrategy('CreateSelector'),
@@ -239,6 +263,8 @@ class NodeFactory:
         'WeightedSelector': WeightedSelectorStrategy(),
         'Sequence': CompositeStrategy('CreateSequence'),
         'ParallelSequence': CompositeStrategy('CreateParallelSequence'),
+        'ReactiveSelector': ReactiveCompositeStrategy('CreateReactiveSelector'),
+        'ReactiveSequence': ReactiveCompositeStrategy('CreateReactiveSequence'),
         'Action': LeafStrategy('CreateAction'),
         'Condition': LeafStrategy('CreateCondition'),
         'Root': RootStrategy(),
@@ -306,9 +332,9 @@ class GraphParser:
         # 2. Identify Logical Nodes
         logical_nodes: Dict[str, BTNode] = {} # cell_id -> BTNode
 
-        def get_node_info(cell_id: str) -> tuple[str, str, float, float, bool]:
+        def get_node_info(cell_id: str) -> tuple[str, str, float, float, bool, Optional[str]]:
             main_cell = self.cells.get(cell_id)
-            if main_cell is None: return ("Unknown", "Action", 0, 0, False)
+            if main_cell is None: return ("Unknown", "Action", 0, 0, False, None)
 
             geo = main_cell.find('mxGeometry')
             x = float(geo.get('x', 0)) if geo is not None else 0
@@ -401,6 +427,8 @@ class GraphParser:
                     n_type = "RandomSelector"
                 elif "?P" in symbol:
                     n_type = "ParallelSelector"
+                elif "?!" in symbol:
+                    n_type = "ReactiveSelector"
                 elif symbol in ("?", "? "):
                     if "Root" in label or label == "RootNode":
                         n_type = "Root"
@@ -408,6 +436,8 @@ class GraphParser:
                         n_type = "Selector"
                 elif "→P" in symbol:
                     n_type = "ParallelSequence"
+                elif "→!" in symbol:
+                    n_type = "ReactiveSequence"
                 elif "→" in symbol:
                     n_type = "Sequence"
                 elif symbol == "":
@@ -417,7 +447,14 @@ class GraphParser:
             if label == "RootNode":
                 n_type = "Root"
 
-            return (label, n_type, x, y, has_memory)
+            watched_key = None
+            if n_type in ("ReactiveSelector", "ReactiveSequence"):
+                wk_match = re.search(r"\(['\"]([^'\"]+)['\"]\)", label)
+                if wk_match:
+                    watched_key = wk_match.group(1)
+                    label = re.sub(r"\(['\"][^'\"]*['\"]\)", '', label)
+
+            return (label, n_type, x, y, has_memory, watched_key)
 
         connected_ids = set()
         for s, t, w in self.edges:
@@ -425,8 +462,8 @@ class GraphParser:
             connected_ids.add(t)
             
         for cid in connected_ids:
-            label, n_type, x, y, has_memory = get_node_info(cid)
-            logical_nodes[cid] = BTNode(cid, label, n_type, x, y, has_memory)
+            label, n_type, x, y, has_memory, watched_key = get_node_info(cid)
+            logical_nodes[cid] = BTNode(cid, label, n_type, x, y, has_memory, watched_key)
 
         # 4. Link Nodes
         root_node = None
@@ -466,6 +503,8 @@ class SimbaGenerator:
         self.wrappers: List[Dict[str, str]] = []
         # leaf methods under Link decorators that need forward declarations
         self.link_leaf_methods: List[Dict[str, Any]] = []
+        # watched blackboard keys collected from reactive nodes
+        self.watched_keys: List[str] = []
 
     def register_method(self, name: str, node_type: str, has_params: bool = False):
         if not name: return
@@ -616,11 +655,200 @@ class SimbaGenerator:
 
     def generate_code(self, root: BTNode) -> str:
         if not root: return "// No Tree Found"
+        self._collect_watched_keys(root)
         return self.generate_node(root, 0)
 
     def generate_node(self, node: BTNode, indent_level: int) -> str:
         strategy = NodeFactory.get_strategy(node.node_type)
         return strategy.generate(node, self, indent_level)
+
+    def _collect_watched_keys(self, node: BTNode):
+        if node.watched_key and node.watched_key not in self.watched_keys:
+            self.watched_keys.append(node.watched_key)
+        for child in node.children:
+            self._collect_watched_keys(child)
+
+    def _sanitize_key(self, key: str) -> str:
+        return re.sub(r'[^a-zA-Z0-9]', '', key)
+
+    def generate_async_blackboard_types(self) -> str:
+        if not self.watched_keys:
+            return ""
+        lines = []
+        lines.append("// --- Async Blackboard Types ---")
+        lines.append("type")
+        lines.append("  TAsyncBBOpType = (ASYNC_BB_SET, ASYNC_BB_GET);")
+        lines.append("  TAsyncBBOperation = record")
+        lines.append("    OpType: TAsyncBBOpType;")
+        lines.append("    Value: Variant;")
+        lines.append("  end;")
+        lines.append("  TAsyncBBEntry = record")
+        lines.append("    Key: String;")
+        lines.append("    Thread: TThread;")
+        lines.append("    OpQueue: array of TAsyncBBOperation;")
+        lines.append("    QueueLock: TLock;")
+        lines.append("    CachedValue: Variant;")
+        lines.append("    CacheLock: TLock;")
+        lines.append("    CacheValid: Boolean;")
+        lines.append("    DefaultValue: Variant;")
+        lines.append("  end;")
+        lines.append("  TAsyncBlackboard = record")
+        lines.append("    Entries: array of TAsyncBBEntry;")
+        lines.append("  end;")
+        return "\n".join(lines)
+
+    def generate_async_bb_infrastructure(self) -> str:
+        if not self.watched_keys:
+            return ""
+        lines = []
+        lines.append("// --- Async BB Thread Forward Declarations ---")
+        for key in self.watched_keys:
+            safe_key = self._sanitize_key(key)
+            lines.append(f"procedure RunBBThread_{safe_key}; forward;")
+        lines.append("")
+        lines.append("// --- Async Blackboard Infrastructure ---")
+        lines.append("")
+        lines.append("procedure TBot.AsyncBB_Setup();")
+        lines.append("begin")
+        lines.append(f"  SetLength(Self.AsyncBB.Entries, {len(self.watched_keys)});")
+        for i, key in enumerate(self.watched_keys):
+            lines.append(f"  Self.AsyncBB.Entries[{i}].Key := '{key}';")
+            lines.append(f"  Self.AsyncBB.Entries[{i}].QueueLock := TLock.Create();")
+            lines.append(f"  Self.AsyncBB.Entries[{i}].CacheLock := TLock.Create();")
+            lines.append(f"  Self.AsyncBB.Entries[{i}].CacheValid := False;")
+            lines.append(f"  Self.AsyncBB.Entries[{i}].DefaultValue := False;")
+        lines.append("end;")
+        lines.append("")
+        lines.append("procedure TBot.AsyncBB_UpdateCache(EntryIndex: Integer; Value: Variant);")
+        lines.append("begin")
+        lines.append("  Self.AsyncBB.Entries[EntryIndex].CacheLock.Enter();")
+        lines.append("  Self.AsyncBB.Entries[EntryIndex].CachedValue := Value;")
+        lines.append("  Self.AsyncBB.Entries[EntryIndex].CacheValid := True;")
+        lines.append("  Self.AsyncBB.Entries[EntryIndex].CacheLock.Leave();")
+        lines.append("  Self.Tree.Blackboard.Put(Self.AsyncBB.Entries[EntryIndex].Key, Value);")
+        lines.append("end;")
+        lines.append("")
+        lines.append("procedure TBot.AsyncBB_ProcessQueue(EntryIndex: Integer);")
+        lines.append("var")
+        lines.append("  Ops: array of TAsyncBBOperation;")
+        lines.append("  i: Integer;")
+        lines.append("begin")
+        lines.append("  Self.AsyncBB.Entries[EntryIndex].QueueLock.Enter();")
+        lines.append("  Ops := Copy(Self.AsyncBB.Entries[EntryIndex].OpQueue);")
+        lines.append("  SetLength(Self.AsyncBB.Entries[EntryIndex].OpQueue, 0);")
+        lines.append("  Self.AsyncBB.Entries[EntryIndex].QueueLock.Leave();")
+        lines.append("  for i := 0 to High(Ops) do")
+        lines.append("    if Ops[i].OpType = TAsyncBBOpType.ASYNC_BB_SET then")
+        lines.append("      Self.AsyncBB_UpdateCache(EntryIndex, Ops[i].Value);")
+        lines.append("end;")
+        lines.append("")
+        lines.append("function TBot.AsyncBB_FindIndex(Key: String): Integer;")
+        lines.append("var")
+        lines.append("  i: Integer;")
+        lines.append("begin")
+        lines.append("  Result := -1;")
+        lines.append("  for i := 0 to High(Self.AsyncBB.Entries) do")
+        lines.append("    if Self.AsyncBB.Entries[i].Key = Key then")
+        lines.append("    begin")
+        lines.append("      Result := i;")
+        lines.append("      Break;")
+        lines.append("    end;")
+        lines.append("end;")
+        lines.append("")
+        lines.append("procedure TBot.AsyncBB_SetAsync(Key: String; Value: Variant);")
+        lines.append("var")
+        lines.append("  idx: Integer;")
+        lines.append("begin")
+        lines.append("  idx := Self.AsyncBB_FindIndex(Key);")
+        lines.append("  if idx < 0 then Exit;")
+        lines.append("  Self.AsyncBB.Entries[idx].QueueLock.Enter();")
+        lines.append("  SetLength(Self.AsyncBB.Entries[idx].OpQueue, Length(Self.AsyncBB.Entries[idx].OpQueue) + 1);")
+        lines.append("  Self.AsyncBB.Entries[idx].OpQueue[High(Self.AsyncBB.Entries[idx].OpQueue)].OpType := TAsyncBBOpType.ASYNC_BB_SET;")
+        lines.append("  Self.AsyncBB.Entries[idx].OpQueue[High(Self.AsyncBB.Entries[idx].OpQueue)].Value := Value;")
+        lines.append("  Self.AsyncBB.Entries[idx].QueueLock.Leave();")
+        lines.append("end;")
+        lines.append("")
+        lines.append("function TBot.AsyncBB_GetCached(Key: String): Variant;")
+        lines.append("var")
+        lines.append("  idx: Integer;")
+        lines.append("begin")
+        lines.append("  idx := Self.AsyncBB_FindIndex(Key);")
+        lines.append("  if idx < 0 then Exit;")
+        lines.append("  Self.AsyncBB.Entries[idx].CacheLock.Enter();")
+        lines.append("  if Self.AsyncBB.Entries[idx].CacheValid then")
+        lines.append("    Result := Self.AsyncBB.Entries[idx].CachedValue")
+        lines.append("  else")
+        lines.append("    Result := Self.AsyncBB.Entries[idx].DefaultValue;")
+        lines.append("  Self.AsyncBB.Entries[idx].CacheLock.Leave();")
+        lines.append("end;")
+        lines.append("")
+        lines.append("procedure TBot.AsyncBB_StartAll();")
+        lines.append("begin")
+        for i, key in enumerate(self.watched_keys):
+            safe_key = self._sanitize_key(key)
+            lines.append(f"  Self.AsyncBB.Entries[{i}].Thread := TThread.Create(@RunBBThread_{safe_key});")
+        lines.append("end;")
+        lines.append("")
+        lines.append("procedure TBot.AsyncBB_Free();")
+        lines.append("var")
+        lines.append("  i: Integer;")
+        lines.append("begin")
+        lines.append("  for i := 0 to High(Self.AsyncBB.Entries) do")
+        lines.append("  begin")
+        lines.append("    if Self.AsyncBB.Entries[i].Thread <> nil then")
+        lines.append("    begin")
+        lines.append("      Self.AsyncBB.Entries[i].Thread.Terminate();")
+        lines.append("      Self.AsyncBB.Entries[i].Thread.WaitForTerminate();")
+        lines.append("      Self.AsyncBB.Entries[i].Thread.Free();")
+        lines.append("    end;")
+        lines.append("    if Self.AsyncBB.Entries[i].QueueLock <> nil then")
+        lines.append("      Self.AsyncBB.Entries[i].QueueLock.Free();")
+        lines.append("    if Self.AsyncBB.Entries[i].CacheLock <> nil then")
+        lines.append("      Self.AsyncBB.Entries[i].CacheLock.Free();")
+        lines.append("  end;")
+        lines.append("end;")
+        return "\n".join(lines)
+
+    def generate_per_key_thread_procedures(self) -> str:
+        if not self.watched_keys:
+            return ""
+        lines = []
+        lines.append("// --- Async Blackboard Thread Procedures ---")
+        lines.append("")
+        for i, key in enumerate(self.watched_keys):
+            safe_key = self._sanitize_key(key)
+            lines.append(f"procedure BBThread_{safe_key}_Execute(Thread: TThread);")
+            lines.append("begin")
+            lines.append("  while not Thread.IsTerminated do")
+            lines.append("  begin")
+            lines.append("    try")
+            lines.append(f"      Bot.AsyncBB_ProcessQueue({i});")
+            lines.append(f"      // PLACEHOLDER: Replace with actual computation")
+            lines.append(f"      //   e.g. Bot.AsyncBB_UpdateCache({i}, ComputeMyValue());")
+            lines.append(f"      Bot.AsyncBB_UpdateCache({i}, False);")
+            lines.append("    except")
+            lines.append("      // Silent error handling during background execution")
+            lines.append("    end;")
+            lines.append("    Sleep(1);")
+            lines.append("  end;")
+            lines.append("end;")
+            lines.append("")
+            lines.append(f"procedure RunBBThread_{safe_key};")
+            lines.append("begin")
+            lines.append(f"  BBThread_{safe_key}_Execute(CurrentThread());")
+            lines.append("end;")
+            lines.append("")
+        return "\n".join(lines)
+
+    def generate_async_bb_init_section(self) -> str:
+        if not self.watched_keys:
+            return ""
+        lines = []
+        lines.append("  // Async Blackboard Init")
+        lines.append("  Self.AsyncBB_Setup();")
+        lines.append("  Self.AsyncBB_StartAll();")
+        lines.append("  AddOnTerminate(@Self.AsyncBB_Free);")
+        return "\n".join(lines) + "\n"
 
 # ==========================================
 # GUI Application
@@ -667,7 +895,7 @@ class ConverterApp:
         tk.Label(text_frame, text="Script Footer:").pack(anchor="w")
         self.footer_text = scrolledtext.ScrolledText(text_frame, height=8)
         self.footer_text.pack(fill=tk.BOTH, expand=True, pady=(0, 5))
-        self.footer_text.insert(tk.END, self.settings.get("footer_template", "var\n  Bot: TBot;\nbegin\n  Bot.Init();\n  while True do\n    Bot.Tree.Tick();\nend."))
+        self.footer_text.insert(tk.END, self.settings.get("footer_template", "begin\n  Bot.Init();\n  while True do\n  begin\n    Bot.Tree.Tick();\n  end;\nend."))
 
         # Actions
         btn_frame = tk.Frame(main_frame)
@@ -676,6 +904,7 @@ class ConverterApp:
         self.save_defaults_var = tk.BooleanVar(value=False)
         tk.Checkbutton(btn_frame, text="Save Header/Footer as Default", variable=self.save_defaults_var).pack(side=tk.LEFT)
         
+        tk.Button(btn_frame, text="Reset Defaults", command=self.reset_defaults).pack(side=tk.LEFT, padx=10)
         tk.Button(btn_frame, text="Convert & Save", command=self.run_conversion, bg="#dddddd", font=("Arial", 10, "bold")).pack(side=tk.RIGHT)
 
     def load_settings(self):
@@ -699,6 +928,14 @@ class ConverterApp:
                 json.dump(self.settings, f, indent=4)
         except Exception as e:
             print(f"Failed to save settings: {e}")
+
+    def reset_defaults(self):
+        self.header_text.delete("1.0", tk.END)
+        self.header_text.insert(tk.END, "{$I WaspLib/osrs.simba}\n{$I behaviortree.simba}\n")
+        self.footer_text.delete("1.0", tk.END)
+        self.footer_text.insert(tk.END, "begin\n  Bot.Init();\n  while True do\n  begin\n    Bot.Tree.Tick();\n  end;\nend.")
+        self.settings.pop("header_template", None)
+        self.settings.pop("footer_template", None)
 
     def browse_xml(self):
         f = filedialog.askopenfilename(filetypes=[("XML Files", "*.xml"), ("All Files", "*.*")])
@@ -730,26 +967,40 @@ class ConverterApp:
             tree_code = gen.generate_code(root_node)
             placeholders = gen.generate_placeholders()
             forward_decls = gen.generate_forward_declarations()
+            async_bb_types = gen.generate_async_blackboard_types()
+            async_bb_infra = gen.generate_async_bb_infrastructure()
+            async_bb_threads = gen.generate_per_key_thread_procedures()
+            async_bb_init = gen.generate_async_bb_init_section()
 
             # 3. Assemble
             user_header = self.header_text.get("1.0", tk.END).strip()
             user_footer = self.footer_text.get("1.0", tk.END).strip()
             
-            # Boilerplate parts
-            bot_record = "type\n  TBot = record\n    MainForm: TScriptForm;\n    Tree: TBehaviorTree;\n    MainConfig: TConfigJSON;\n  end;"
+            async_field = "\n    AsyncBB: TAsyncBlackboard;" if gen.watched_keys else ""
+            bot_record = f"type\n  TBot = record\n    MainForm: TScriptForm;\n    Tree: TBehaviorTree;{async_field}\n    MainConfig: TConfigJSON;\n  end;"
+            bot_var = "var\n  Bot: TBot;"
             init_start = "procedure TBot.Init();\nbegin\n  Self.Tree.Setup('MyBot');"
             init_end = "  Self.Tree.PrintStructure();\n  AddOnTerminate(@Self.Tree.Free);\nend;"
 
             forward_section = f"{forward_decls}\n" if forward_decls else ""
+            async_bb_types_section = f"{async_bb_types}\n" if async_bb_types else ""
+            async_bb_infra_section = f"{async_bb_infra}\n" if async_bb_infra else ""
+            async_bb_threads_section = f"{async_bb_threads}\n" if async_bb_threads else ""
+            async_bb_init_section = f"{async_bb_init}\n" if async_bb_init else ""
 
             full_script = (
                 f"{user_header}\n\n"
-                f"{bot_record}\n\n"
+                f"{async_bb_types_section}"
+                f"{bot_record}\n"
+                f"{bot_var}\n\n"
                 f"{forward_section}"
-                f"{placeholders}\n\n"
+                f"{placeholders}\n"
+                f"{async_bb_infra_section}"
+                f"{async_bb_threads_section}"
                 f"{init_start}\n"
                 f"  // Generated Tree\n"
                 f"  Self.Tree.Root := {tree_code};\n\n"
+                f"{async_bb_init_section}"
                 f"{init_end}\n\n"
                 f"{user_footer}"
             )

@@ -1,6 +1,6 @@
 {
-    "last_xml": "C:/Users/kusht/Downloads/photo_of_graph.drawio.xml",
+    "last_xml": "C:/Users/kusht/Downloads/photo_of_graph.drawio (1).xml",
     "last_out": "C:/Scripts/Simba/BlastFurnace9001/OurExampleTemplateOutput.simba",
-    "header_template": "{$I WaspLib/osrs.simba}\n{$I behaviortree.simba}",
-    "footer_template": "var\n  Bot: TBot;\nbegin\n  Bot.Init();\n  while True do\n    Bot.Tree.Tick();\nend."
+    "header_template": "{$I WaspLib/osrs.simba}\n{$I behaviortree.simba}\n\nvar\n  _LastDebugMsg: String;\n\n//WriteLn wrapper with current time added, only logs a new msg if not similar to last one.\nprocedure log(s: string);\nbegin\n  if (s = _LastDebugMsg) then Exit;\n  _LastDebugMsg := s;\n WriteLn(GetTimeStamp('[hh:mm:ss:uu]') + ' ' + s);\nend;",
+    "footer_template": "begin\n  Bot.Init();\n  while True do\n  begin\n    Bot.Tree.Tick();\n  end;\nend."
 }
