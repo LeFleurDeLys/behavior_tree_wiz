@@ -20,17 +20,11 @@ Run behavior_tree_wiz.exe or the equivalent python script.
 4.  **Save as default**: Will create a small file where script was ran to save the default header and footer (also persists your last-used file paths).
 5.  **Convert**: Click "Convert & Save".
     
-
-<img width="799" height="634" alt="image" src="https://github.com/user-attachments/assets/98f9f67a-9e14-4055-a8da-bdc33e02066a" />
-
 ## Creates Conditions & Actions Placeholder Stubs 
 <img width="799" height="439" alt="image" src="https://github.com/user-attachments/assets/b6b43709-5eca-4dc9-b45a-b2fe7d906ba7" />
 
 ## Generates the whole behavior tree automatically
 <img width="703" height="746" alt="image" src="https://github.com/user-attachments/assets/2824b72c-ba53-4288-b5d8-224c0abae0d0" />
-
-## Available Nodes at the Moment
-<img width="1048" height="778" alt="image" src="https://github.com/user-attachments/assets/75d2d262-6394-4478-912f-967a741d6849" />
 
 ## Node Symbols Reference
 
@@ -55,6 +49,10 @@ This means:
 3. **Group** the shape and text label together (select both → right-click → Group).
 4. Connect the group to its children with edges.
 
+
+## Available Nodes at the Moment (import "availablenodes.draw.io.png/" into draw.io to have them)
+<img width="1333" height="563" alt="availablenodes drawio" src="https://github.com/user-attachments/assets/58da6b74-aeba-45e6-8f8e-9b3210139a29" />
+
 ### Composites (Selectors & Sequences)
 
 > **All composites must be inside a draw.io group** (shape with symbol + text label with name).
@@ -64,9 +62,9 @@ This means:
 | Selector | `?` | Rectangle (grouped) | `?` | `ChooseOne` | `Self.Tree.CreateSelector('ChooseOne', [...])` |
 | Sequence | `→` | Rectangle (grouped) | `→` | `DoAll` | `Self.Tree.CreateSequence('DoAll', [...])` |
 | ParallelSelector | `?P` | Rectangle (grouped) | `?P` | `RunAny` | `Self.Tree.CreateParallelSelector('RunAny', [...])` |
-| ParallelSequence | `→→` | Rectangle (grouped) | `→→` | `RunAll` | `Self.Tree.CreateParallelSequence('RunAll', [...])` |
+| ParallelSequence | `→P` | Rectangle (grouped) | `→P` | `RunAll` | `Self.Tree.CreateParallelSequence('RunAll', [...])` |
 | RandomSelector | `??` | Rectangle (grouped) | `??` | `PickRandom` | `Self.Tree.CreateRandomSelector('PickRandom', [...])` |
-| WeightedSelector | `??%` or `?%` | Rectangle (grouped) | `??%` | `WeightedPick` | `Self.Tree.CreateWeightedSelector('WeightedPick', [...], [w1, w2, ...])` |
+| WeightedSelector | `?%` | Rectangle (grouped) | `?%` | `WeightedPick` | `Self.Tree.CreateWeightedSelector('WeightedPick', [...], [w1, w2, ...])` |
 
 > **Memory Mode** (Selector and Sequence only): Use **rounded rectangles** (`rounded=1` style) to enable memory on Selector and Sequence nodes. This appends `, True` to the generated call (e.g., `Self.Tree.CreateSelector('ChooseOne', [...], True)`). Memory mode is **not** supported for ParallelSelector, ParallelSequence, RandomSelector, or WeightedSelector.
 
@@ -76,6 +74,8 @@ Weights are specified as **labels on the edges** connecting the WeightedSelector
 
 The converter extracts the first numeric value from each edge label. You can use plain numbers (`0.7`) or percentages (`70%`).
 
+#This is a WeightedSelector in which we even find a ConditionalDecorator (much wow, peak bt)
+<img width="1183" height="647" alt="exampleweightedandconditional drawio" src="https://github.com/user-attachments/assets/1d7f3b92-2587-47f5-8561-44ad3cd3b44c" />
 ### Leaves (Actions & Conditions)
 
 > Leaf nodes can be placed directly on the canvas (no group required). Standalone shapes are detected by shape and label text.
@@ -196,20 +196,19 @@ The `TBot` record, all stubs, wrappers, and the `Init()` procedure are auto-gene
 
 <img width="799" height="634" alt="image" src="https://github.com/user-attachments/assets/98f9f67a-9e14-4055-a8da-bdc33e02066a" />
 
-## Creates Conditions & Actions Placeholder Stubs 
-<img width="799" height="439" alt="image" src="https://github.com/user-attachments/assets/b6b43709-5eca-4dc9-b45a-b2fe7d906ba7" />
+## Creates wrappers and forward declarations for link and conditional nodes
+<img width="469" height="227" alt="image" src="https://github.com/user-attachments/assets/0afc6990-40ce-4e6a-a541-9bd814810050" /> 
 
-## Generates the whole behavior tree automatically
-<img width="703" height="746" alt="image" src="https://github.com/user-attachments/assets/2824b72c-ba53-4288-b5d8-224c0abae0d0" />
+<img width="477" height="120" alt="image" src="https://github.com/user-attachments/assets/bd3a092f-50d4-4f4d-bcda-bf1a8c68c84e" />
 
-## Available Nodes at the Moment
-<img width="1048" height="778" alt="image" src="https://github.com/user-attachments/assets/75d2d262-6394-4478-912f-967a741d6849" />
-Decorators to be added soon...
+## Example draw.io Behavior Tree snippets
+#This is a LinkDecorator working within a ParallelSequence.
+<img width="1483" height="794" alt="examplelinkdecor drawio" src="https://github.com/user-attachments/assets/8be5ffb0-75ad-418c-bbe1-0c71ed979df0" />
 
-## Example draw.io Behavior Tree snippet
-<img width="1223" height="780" alt="image" src="https://github.com/user-attachments/assets/d34085df-5b75-41ad-9b82-cdcd989bad2c" />
-This is a WeightedSelector where there is 0.7 weigh to roll the first sequence, 0.11 to roll the second one, 0.19 to roll the third).
-Each sequence in this example is comprised of a condition and an action.
 
-## Documentation (Generated by AI - quickly PRd by me)
+## Example tree 
+<img width="4023" height="973" alt="photo_of_graph drawio" src="https://github.com/user-attachments/assets/a3645edb-70b5-4a76-b4cd-cd60163635f5" />
+
+
+## Documentation (I try to keep it updated, but yeah)
 **[Documentation](./docs.md)**
