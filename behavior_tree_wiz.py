@@ -309,7 +309,7 @@ class GraphParser:
 
         def get_node_info(cell_id: str) -> tuple[str, str, float, float, bool]:
             main_cell = self.cells.get(cell_id)
-            if not main_cell: return ("Unknown", "Action", 0, 0, False)
+            if main_cell is None: return ("Unknown", "Action", 0, 0, False)
 
             geo = main_cell.find('mxGeometry')
             x = float(geo.get('x', 0)) if geo is not None else 0
@@ -318,7 +318,7 @@ class GraphParser:
             curr_parent = main_cell.get('parent')
             while curr_parent and curr_parent != '1' and curr_parent != '0':
                 parent_cell = self.cells.get(curr_parent)
-                if parent_cell:
+                if parent_cell is not None:
                     p_geo = parent_cell.find('mxGeometry')
                     if p_geo is not None:
                         x += float(p_geo.get('x', 0))
@@ -335,7 +335,7 @@ class GraphParser:
             symbol = raw_value
             if symbol and "<" in symbol:
                 symbol = re.sub(r'<[^>]+>', '', symbol)
-            symbol = symbol.strip()
+            symbol = re.sub(r'\s+', '', symbol)
 
             parent_id = main_cell.get('parent')
             is_in_group = parent_id is not None and parent_id not in ('0', '1')
@@ -344,7 +344,7 @@ class GraphParser:
             if is_in_group:
                 curr_search_cell = main_cell
                 label_found = False
-                while curr_search_cell and not label_found:
+                while curr_search_cell is not None and not label_found:
                     search_parent = curr_search_cell.get('parent')
                     if not search_parent or search_parent in ('1', '0'):
                         break
@@ -396,9 +396,7 @@ class GraphParser:
                 elif "δL" in symbol:
                     n_type = "Link"
             else:
-                if "??%" in symbol:
-                    n_type = "WeightedSelector"
-                elif "?%" in symbol:
+                if "?%" in symbol:
                     n_type = "WeightedSelector"
                 elif "??" in symbol:
                     n_type = "RandomSelector"
@@ -409,7 +407,7 @@ class GraphParser:
                         n_type = "Root"
                     else:
                         n_type = "Selector"
-                elif "→→" in symbol or symbol.count("→") >= 2:
+                elif "→P" in symbol:
                     n_type = "ParallelSequence"
                 elif "→" in symbol:
                     n_type = "Sequence"

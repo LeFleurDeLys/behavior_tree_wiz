@@ -85,17 +85,16 @@ The conversion process follows a linear pipeline:
 
     **Branch 3 — Grouped nodes without rhombus (other shapes):**
     These are checked for composite symbols. The checks are applied in this order (first match wins):
-    1.  **WeightedSelector**: Symbol contains `??%`
-    2.  **WeightedSelector**: Symbol contains `?%`
-    3.  **RandomSelector**: Symbol contains `??`
-    4.  **ParallelSelector**: Symbol contains `?P`
-    5.  **Selector**: Symbol is exactly `?` or `? ` (but if the display label contains `Root` or is `RootNode`, it becomes **Root** instead)
-    6.  **ParallelSequence**: Symbol contains `→→` or has 2+ `→` characters
-    7.  **Sequence**: Symbol contains `→`
-    8.  **Sequence** (fallback): Symbol is empty AND the node's parent group contains an edge
-    9.  **Action**: Default fallback if nothing matches
+    1.  **WeightedSelector**: Symbol contains `?%`
+    2.  **RandomSelector**: Symbol contains `??`
+    3.  **ParallelSelector**: Symbol contains `?P`
+    4.  **Selector**: Symbol is exactly `?` or `? ` (but if the display label contains `Root` or is `RootNode`, it becomes **Root** instead)
+    5.  **ParallelSequence**: Symbol contains `→P`
+    6.  **Sequence**: Symbol contains `→`
+    7.  **Sequence** (fallback): Symbol is empty AND the node's parent group contains an edge
+    8.  **Action**: Default fallback if nothing matches
 
-    > **Important**: Text-based keywords like "Selector", "Sequence", etc. are **not** used for detection. Only the symbols listed above are recognized. The order of checks matters — e.g., `??%` is checked before `??` so that `??%` is correctly identified as WeightedSelector rather than RandomSelector.
+    > **Important**: Text-based keywords like "Selector", "Sequence", etc. are **not** used for detection. Only the symbols listed above are recognized. The order of checks matters — e.g., `?P` is checked before `?` so that `?P` is correctly identified as ParallelSelector rather than Selector.
 
     *   **Label Resolution**: When a node is inside a group, the parser searches the group's children for a sibling cell with `text` in its style. That sibling's text becomes the **display name** (label) used in the generated Simba code. The shape cell's own text (the symbol) is used only for type detection.
 
@@ -233,13 +232,13 @@ This means **all composites and decorators must be inside draw.io groups** to be
 | Selector | `?` | Rectangle (grouped) | Rounded rect → `True` | `ChooseOne` | `Self.Tree.CreateSelector('ChooseOne', [...])` |
 | Sequence | `→` | Rectangle (grouped) | Rounded rect → `True` | `DoAll` | `Self.Tree.CreateSequence('DoAll', [...])` |
 | ParallelSelector | `?P` | Rectangle (grouped) | Not supported | `RunAny` | `Self.Tree.CreateParallelSelector('RunAny', [...])` |
-| ParallelSequence | `→→` | Rectangle (grouped) | Not supported | `RunAll` | `Self.Tree.CreateParallelSequence('RunAll', [...])` |
+| ParallelSequence | `→P` | Rectangle (grouped) | Not supported | `RunAll` | `Self.Tree.CreateParallelSequence('RunAll', [...])` |
 | RandomSelector | `??` | Rectangle (grouped) | Not supported | `PickRandom` | `Self.Tree.CreateRandomSelector('PickRandom', [...])` |
-| WeightedSelector | `??%` or `?%` | Rectangle (grouped) | Not supported | `WeightedPick` | `Self.Tree.CreateWeightedSelector('WeightedPick', [...], [w1, w2])` |
+| WeightedSelector | `?%` | Rectangle (grouped) | Not supported | `WeightedPick` | `Self.Tree.CreateWeightedSelector('WeightedPick', [...], [w1, w2])` |
 
 > **Memory Mode**: Only Selector and Sequence support memory mode (via `rounded=1` in the style). This appends `, True` to the generated call. Other composites ignore the memory flag silently.
 
-> **WeightedSelector Weights**: Weights are specified as numeric labels on the **edges** connecting the WeightedSelector to its children. The first numeric value in each edge label is extracted. Order: `??%` is checked before `?%` and `??` to avoid misidentification.
+> **WeightedSelector Weights**: Weights are specified as numeric labels on the **edges** connecting the WeightedSelector to its children. The first numeric value in each edge label is extracted.
 
 ### Leaves
 
