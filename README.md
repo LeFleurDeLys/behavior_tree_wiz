@@ -14,9 +14,9 @@ This tool converts visual behavior trees designed in XML format (e.g., from or d
 ### Running the Tool
 Run behavior_tree_wiz.exe or the equivalent python script.
 
-1.  **Source XML**: Select your `.xml` file containing the behavior tree diagram (which uses the given node types in `photo_of_graph.draw.io.png`).
+1.  **Source XML**: Select your `.xml` file containing the behavior tree diagram (which uses the given node types in `availablenodes.draw.io.png` or `photo_of_graph.draw.io.png`).
 2.  **Output Simba**: Choose where to save the generated `.simba` script.
-3.  **Header & Footer**: You can add whatever you want there, the generated tree and functions will appear sandwiched right between the header and footer you put in.
+3.  **Header & Footer**: You can add whatever you want there, the generated tree and functions will appear sandwiched right between the header and footer you put in. Don't forget to have the `TBot.Tree.Tick` in your mainloop (already there in default footer).
 4.  **Save as default**: Will create a small file where script was ran to save the default header and footer (also persists your last-used file paths).
 5.  **Convert**: Click "Convert & Save".
 <img width="799" height="634" alt="image" src="https://github.com/user-attachments/assets/98f9f67a-9e14-4055-a8da-bdc33e02066a" />
