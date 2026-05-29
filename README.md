@@ -33,8 +33,6 @@ The converter uses a **symbol + group** system for node type detection:
 - **Leaf nodes** (Actions and Conditions) can be placed directly on the canvas as standalone shapes. Their type is determined by shape (ellipse = Condition) or label prefix (`Is` = Condition). Everything else defaults to Action.
 - **Composite nodes** (Selectors, Sequences, etc.) and **Decorator nodes** must be placed inside **draw.io groups**. The shape's text is the **symbol** (e.g., `?`, `→`, `δS`), and a separate **text label** inside the same group provides the display name.
 
-A standalone rectangle with text `? ChooseOne` will be detected as an **Action**, not a Selector — because it's not in a group.
-
 ## Available Nodes at the Moment (import "availablenodes.draw.io.png/" into draw.io to have them)
 <img width="1333" height="563" alt="availablenodes drawio" src="https://github.com/user-attachments/assets/58da6b74-aeba-45e6-8f8e-9b3210139a29" />
 
