@@ -30,7 +30,7 @@ Run behavior_tree_wiz.exe or the equivalent python script.
 ## Node Symbols Reference
 
 ### Getting the Symbols
-Download **`photo_of_graph.draw.io.png`** from this repository and import it into your draw.io canvas (drag & drop or **Arrange → Insert → Image**). The image contains all node symbols below that you can copy/paste into your own diagrams.
+Download **`photo_of_graph.draw.io.png`** from this repository and import it into your draw.io canvas (drag & drop or **File → Import → Device**). The image contains all node symbols below that you can copy/paste into your own diagrams, select the wholegroup and click CTRL + D to duplicate it for easy node creation.
 
 ### How Node Detection Works
 
