@@ -27,7 +27,8 @@ Run behavior_tree_wiz.exe or the equivalent python script.
 <img width="703" height="746" alt="image" src="https://github.com/user-attachments/assets/2824b72c-ba53-4288-b5d8-224c0abae0d0" />
 
 ## Creates wrappers and forward declarations for link and conditional nodes
-<img width="469" height="227" alt="image" src="https://github.com/user-attachments/assets/0afc6990-40ce-4e6a-a541-9bd814810050" />
+<img width="469" height="227" alt="image" src="https://github.com/user-attachments/assets/0afc6990-40ce-4e6a-a541-9bd814810050" /> 
+
 <img width="477" height="120" alt="image" src="https://github.com/user-attachments/assets/bd3a092f-50d4-4f4d-bcda-bf1a8c68c84e" />
 
 # Available Nodes at the Moment (import "availablenodes.draw.io.png/" into draw.io to have them)
@@ -35,13 +36,13 @@ Run behavior_tree_wiz.exe or the equivalent python script.
 You can make any sequence or selector type of node have memory by ticking the square's "Rounded" style on draw.io
 
 ## Example draw.io Behavior Tree snippets
+#This is a LinkDecorator working within a ParallelSequence.
 <img width="1483" height="794" alt="examplelinkdecor drawio" src="https://github.com/user-attachments/assets/8be5ffb0-75ad-418c-bbe1-0c71ed979df0" />
-This is a LinkDecorator working within a ParallelSequence.
 
+#This is a WeightedSelector in which we even find a ConditionalDecorator (much wow, peak bt)
 <img width="1183" height="647" alt="exampleweightedandconditional drawio" src="https://github.com/user-attachments/assets/1d7f3b92-2587-47f5-8561-44ad3cd3b44c" />
-This is a WeightedSelector in which we even find a ConditionalDecorator (much wow, peak bt)
 
-## Example tree
+## Example tree 
 <img width="4023" height="973" alt="photo_of_graph drawio" src="https://github.com/user-attachments/assets/a3645edb-70b5-4a76-b4cd-cd60163635f5" />
 
 
