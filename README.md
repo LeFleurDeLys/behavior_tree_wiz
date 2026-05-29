@@ -39,17 +39,7 @@ The converter uses a **symbol + group** system for node type detection:
 - **Leaf nodes** (Actions and Conditions) can be placed directly on the canvas as standalone shapes. Their type is determined by shape (ellipse = Condition) or label prefix (`Is` = Condition). Everything else defaults to Action.
 - **Composite nodes** (Selectors, Sequences, etc.) and **Decorator nodes** must be placed inside **draw.io groups**. The shape's text is the **symbol** (e.g., `?`, `→`, `δS`), and a separate **text label** inside the same group provides the display name.
 
-This means:
-- A standalone rectangle with text `? ChooseOne` will be detected as an **Action**, not a Selector — because it's not in a group.
-- To create a Selector named "ChooseOne", you must group a rectangle (text = `?`) with a text label (text = `ChooseOne`).
-
-#### How to Create a Grouped Node in draw.io
-
-1. Create a **shape** (rectangle for composites, diamond for decorators) and set its text to one of the symbols below (e.g., `?` for Selector, `→` for Sequence).
-2. Create a **text label** nearby with your desired display name (e.g., `ChooseOne`).
-3. **Group** the shape and text label together (select both → right-click → Group).
-4. Connect the group to its children with edges.
-
+A standalone rectangle with text `? ChooseOne` will be detected as an **Action**, not a Selector — because it's not in a group.
 
 ## Available Nodes at the Moment (import "availablenodes.draw.io.png/" into draw.io to have them)
 <img width="1333" height="563" alt="availablenodes drawio" src="https://github.com/user-attachments/assets/58da6b74-aeba-45e6-8f8e-9b3210139a29" />
@@ -124,14 +114,6 @@ In generated code, the root simply delegates to its first child. If the root has
 ### Decorators
 
 Decorators are **diamond (rhombus) shapes** inside a draw.io **group**. The diamond's text is a delta symbol that determines the type. The group's text label provides the display name. Parameters go in parentheses after the name.
-
-#### How to Create a Decorator in draw.io
-
-1. Create a **diamond** shape and set its text to one of the delta symbols below (e.g., `δS`).
-2. Create a **text label** nearby with your desired display name (e.g., `Always Win`).
-3. **Group** the diamond and text label together (select both → right-click → Group).
-4. Connect the group to its child node with an edge.
-5. For parameterized decorators, add the parameter in parentheses on the text label (e.g., `Retry(5)`).
 
 #### Supported Decorators
 
