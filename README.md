@@ -21,12 +21,6 @@ Run behavior_tree_wiz.exe or the equivalent python script.
 5.  **Convert**: Click "Convert & Save".
 <img width="799" height="634" alt="image" src="https://github.com/user-attachments/assets/98f9f67a-9e14-4055-a8da-bdc33e02066a" />
     
-## Creates Conditions & Actions Placeholder Stubs 
-<img width="799" height="439" alt="image" src="https://github.com/user-attachments/assets/b6b43709-5eca-4dc9-b45a-b2fe7d906ba7" />
-
-## Generates the whole behavior tree automatically
-<img width="703" height="746" alt="image" src="https://github.com/user-attachments/assets/2824b72c-ba53-4288-b5d8-224c0abae0d0" />
-
 ## Node Symbols Reference
 
 ### Getting the Symbols
@@ -44,29 +38,6 @@ A standalone rectangle with text `? ChooseOne` will be detected as an **Action**
 ## Available Nodes at the Moment (import "availablenodes.draw.io.png/" into draw.io to have them)
 <img width="1333" height="563" alt="availablenodes drawio" src="https://github.com/user-attachments/assets/58da6b74-aeba-45e6-8f8e-9b3210139a29" />
 
-### Composites (Selectors & Sequences)
-
-> **All composites must be inside a draw.io group** (shape with symbol + text label with name).
-
-| Node Type | Symbol | Shape | Example Symbol | Example Display Name | Generated Simba Call |
-|-----------|--------|-------|----------------|---------------------|---------------------|
-| Selector | `?` | Rectangle (grouped) | `?` | `ChooseOne` | `Self.Tree.CreateSelector('ChooseOne', [...])` |
-| Sequence | `→` | Rectangle (grouped) | `→` | `DoAll` | `Self.Tree.CreateSequence('DoAll', [...])` |
-| ParallelSelector | `?P` | Rectangle (grouped) | `?P` | `RunAny` | `Self.Tree.CreateParallelSelector('RunAny', [...])` |
-| ParallelSequence | `→P` | Rectangle (grouped) | `→P` | `RunAll` | `Self.Tree.CreateParallelSequence('RunAll', [...])` |
-| RandomSelector | `??` | Rectangle (grouped) | `??` | `PickRandom` | `Self.Tree.CreateRandomSelector('PickRandom', [...])` |
-| WeightedSelector | `?%` | Rectangle (grouped) | `?%` | `WeightedPick` | `Self.Tree.CreateWeightedSelector('WeightedPick', [...], [w1, w2, ...])` |
-
-> **Memory Mode** (Selector and Sequence only): Use **rounded rectangles** (`rounded=1` style) to enable memory on Selector and Sequence nodes. This appends `, True` to the generated call (e.g., `Self.Tree.CreateSelector('ChooseOne', [...], True)`). Memory mode is **not** supported for ParallelSelector, ParallelSequence, RandomSelector, or WeightedSelector.
-
-#### WeightedSelector — Specifying Weights
-
-Weights are specified as **labels on the edges** connecting the WeightedSelector to its children. For example, if a WeightedSelector has three children with weights 0.7, 0.11, and 0.19, set those numbers as the text on each connecting edge.
-
-The converter extracts the first numeric value from each edge label. You can use plain numbers (`0.7`) or percentages (`70%`).
-
-#This is a WeightedSelector in which we even find a ConditionalDecorator (much wow, peak bt)
-<img width="1183" height="647" alt="exampleweightedandconditional drawio" src="https://github.com/user-attachments/assets/1d7f3b92-2587-47f5-8561-44ad3cd3b44c" />
 ### Leaves (Actions & Conditions)
 
 > Leaf nodes can be placed directly on the canvas (no group required). Standalone shapes are detected by shape and label text.
@@ -102,14 +73,35 @@ When you add parentheses with a value to an Action or Condition label (e.g., `Ea
 
 You can put any string or expression inside the parentheses — it's passed through verbatim to the wrapper call (e.g., `Log(Starting up)`, `WalkTo(Lumbridge)`, `Eat('Shark')`).
 
-### Root
+## Creates Conditions & Actions Placeholder Stubs 
+<img width="799" height="439" alt="image" src="https://github.com/user-attachments/assets/b6b43709-5eca-4dc9-b45a-b2fe7d906ba7" />
 
-The root node is identified by one of:
-- The only node in the diagram that is not the target of any edge (i.e., has no parent in the tree).
-- A grouped `?` node whose display label contains `Root`.
-- Any node with the exact label `RootNode`.
+### Composites (Selectors & Sequences)
 
-In generated code, the root simply delegates to its first child. If the root has multiple children, they are automatically wrapped in a Selector.
+> **All composites must be inside a draw.io group** (shape with symbol + text label with name).
+
+| Node Type | Symbol | Shape | Example Symbol | Example Display Name | Generated Simba Call |
+|-----------|--------|-------|----------------|---------------------|---------------------|
+| Selector | `?` | Rectangle (grouped) | `?` | `ChooseOne` | `Self.Tree.CreateSelector('ChooseOne', [...])` |
+| Sequence | `→` | Rectangle (grouped) | `→` | `DoAll` | `Self.Tree.CreateSequence('DoAll', [...])` |
+| ParallelSelector | `?P` | Rectangle (grouped) | `?P` | `RunAny` | `Self.Tree.CreateParallelSelector('RunAny', [...])` |
+| ParallelSequence | `→P` | Rectangle (grouped) | `→P` | `RunAll` | `Self.Tree.CreateParallelSequence('RunAll', [...])` |
+| RandomSelector | `??` | Rectangle (grouped) | `??` | `PickRandom` | `Self.Tree.CreateRandomSelector('PickRandom', [...])` |
+| WeightedSelector | `?%` | Rectangle (grouped) | `?%` | `WeightedPick` | `Self.Tree.CreateWeightedSelector('WeightedPick', [...], [w1, w2, ...])` |
+
+> **Memory Mode** (Selector and Sequence only): Use **rounded rectangles** (`rounded=1` style) to enable memory on Selector and Sequence nodes. This appends `, True` to the generated call (e.g., `Self.Tree.CreateSelector('ChooseOne', [...], True)`). Memory mode is **not** supported for ParallelSelector, ParallelSequence, RandomSelector, or WeightedSelector.
+
+#### WeightedSelector — Specifying Weights
+
+Weights are specified as **labels on the edges** connecting the WeightedSelector to its children. For example, if a WeightedSelector has three children with weights 0.7, 0.11, and 0.19, set those numbers as the text on each connecting edge.
+
+The converter extracts the first numeric value from each edge label. You can use plain numbers (`0.7`) or percentages (`70%`).
+
+#This is a WeightedSelector in which we even find a ConditionalDecorator (much wow, peak bt)
+<img width="1183" height="647" alt="exampleweightedandconditional drawio" src="https://github.com/user-attachments/assets/1d7f3b92-2587-47f5-8561-44ad3cd3b44c" />
+
+## Generates the whole behavior tree automatically
+<img width="703" height="746" alt="image" src="https://github.com/user-attachments/assets/2824b72c-ba53-4288-b5d8-224c0abae0d0" />
 
 ### Decorators
 
@@ -133,6 +125,20 @@ Decorators are **diamond (rhombus) shapes** inside a draw.io **group**. The diam
 - **Retry / Cooldown / Timeout / Repeater**: Pass an integer in parentheses (e.g., `Retry(5)`, `Cooldown(3000)`). You can also use any Simba expression that returns an integer, such as `Cooldown(Random(1000, 2000))` — if the value is not a plain integer, it is passed through verbatim as a raw expression.
 - **Conditional**: Pass a method reference (e.g., `IfGuard(IsReady)` or `IfGuard(@Self.CheckReady)`). The `@` prefix is auto-added if omitted.
 - **ForceSuccess / ForceFailure**: No parameters. Supports **memory mode** via rounded rectangles (appends `, True`). Link does not support memory mode.
+
+## Creates wrappers and forward declarations for link and conditional nodes
+<img width="469" height="227" alt="image" src="https://github.com/user-attachments/assets/0afc6990-40ce-4e6a-a541-9bd814810050" /> 
+
+<img width="477" height="120" alt="image" src="https://github.com/user-attachments/assets/bd3a092f-50d4-4f4d-bcda-bf1a8c68c84e" />
+
+### Root
+
+The root node is identified by one of:
+- The only node in the diagram that is not the target of any edge (i.e., has no parent in the tree).
+- A grouped `?` node whose display label contains `Root`.
+- Any node with the exact label `RootNode`.
+
+In generated code, the root simply delegates to its first child. If the root has multiple children, they are automatically wrapped in a Selector.
 
 ### Generated Output Structure
 
@@ -176,11 +182,6 @@ end;
 ```
 
 The `TBot` record, all stubs, wrappers, and the `Init()` procedure are auto-generated. Your header and footer wrap around this generated code.
-
-## Creates wrappers and forward declarations for link and conditional nodes
-<img width="469" height="227" alt="image" src="https://github.com/user-attachments/assets/0afc6990-40ce-4e6a-a541-9bd814810050" /> 
-
-<img width="477" height="120" alt="image" src="https://github.com/user-attachments/assets/bd3a092f-50d4-4f4d-bcda-bf1a8c68c84e" />
 
 ## Example draw.io Behavior Tree snippets
 #This is a LinkDecorator working within a ParallelSequence.
