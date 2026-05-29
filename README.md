@@ -19,6 +19,7 @@ Run behavior_tree_wiz.exe or the equivalent python script.
 3.  **Header & Footer**: You can add whatever you want there, the generated tree and functions will appear sandwiched right between the header and footer you put in.
 4.  **Save as default**: Will create a small file where script was ran to save the default header and footer (also persists your last-used file paths).
 5.  **Convert**: Click "Convert & Save".
+<img width="799" height="634" alt="image" src="https://github.com/user-attachments/assets/98f9f67a-9e14-4055-a8da-bdc33e02066a" />
     
 ## Creates Conditions & Actions Placeholder Stubs 
 <img width="799" height="439" alt="image" src="https://github.com/user-attachments/assets/b6b43709-5eca-4dc9-b45a-b2fe7d906ba7" />
@@ -193,8 +194,6 @@ end;
 ```
 
 The `TBot` record, all stubs, wrappers, and the `Init()` procedure are auto-generated. Your header and footer wrap around this generated code.
-
-<img width="799" height="634" alt="image" src="https://github.com/user-attachments/assets/98f9f67a-9e14-4055-a8da-bdc33e02066a" />
 
 ## Creates wrappers and forward declarations for link and conditional nodes
 <img width="469" height="227" alt="image" src="https://github.com/user-attachments/assets/0afc6990-40ce-4e6a-a541-9bd814810050" /> 
