@@ -1,8 +1,8 @@
 build/
 dist/
-behavior_tree_wiz.spec
 behavior_tree_wiz.xml
 *.drawio
 xml_converter_settings.json
 /.kilo
 /__pycache__
+*.spec

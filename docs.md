@@ -210,7 +210,7 @@ If your decorator accepts parameters, add parsing logic to `DecoratorStrategy._p
 
 ## 4.1. Getting the Node Symbols for draw.io
 
-Download **`photo_of_graph.draw.io.png`** from the repository and import it into your draw.io canvas via drag & drop or **Arrange → Insert → Image**. The image contains all available node symbols that you can copy and paste into your own behavior tree diagrams.
+Download **`availablenodes.draw.io.png`** from the repository and import it into your draw.io canvas via **File → Import → Device**. The image contains all available node symbols that you can copy and paste into your own behavior tree diagrams.
 
 ---
 
