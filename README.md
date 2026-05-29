@@ -44,7 +44,7 @@ The converter uses a **symbol + group** system for node type detection:
 |-----------|---------------|-------|---------------|---------------------|
 | Condition | Ellipse shape | Ellipse | `IsAlive` | `Self.Tree.CreateCondition('IsAlive', @Self.IsAlive)` |
 | Action | Default fallback (any rectangle) | Rectangle | `Eat` | `Self.Tree.CreateAction('Eat', @Self.Eat)` |
-| Action (with params) | Default fallback | Rectangle | `Eat(Food)` | `Self.Tree.CreateAction('Eat(Food)', @Self.Eat_Food)` |
+| Action (with params) | Default fallback | Rectangle | `Eat(Food)` | `Self.Tree.CreateAction('Eat', @Self.Eat_Food)` |
 
 > **Note**: The ellipse shape check only applies to nodes **not** inside a group. Nodes inside groups (that aren't decorators) are checked for composite symbols and default to Action if no symbol matches.
 

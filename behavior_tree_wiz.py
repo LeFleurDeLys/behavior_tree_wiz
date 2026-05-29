@@ -94,11 +94,10 @@ class LeafStrategy(GenerationStrategy):
         if match:
             func_name = match.group(1)
             args = match.group(2)
+            display_name = func_name
             
-            # Register base method with params (ensures it appears in definitions)
             generator_ref.register_method(func_name, node.node_type, has_params=True)
             
-            # Get or create a reusable wrapper for these specific arguments
             wrapper_name = generator_ref.get_wrapper_name(func_name, args, node.node_type)
             
             return f"{indent}Self.Tree.{self.method_name}('{display_name}', @Self.{wrapper_name})"

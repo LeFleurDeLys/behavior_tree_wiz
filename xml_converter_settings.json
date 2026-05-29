@@ -1,4 +1,6 @@
 {
-    "last_xml": "E:/behavior_tree_wiz/behavior_tree_wiz.xml",
-    "last_out": "E:/behavior_tree_wiz/GeneratedBT.simba"
+    "last_xml": "C:/Users/kusht/Downloads/photo_of_graph.drawio.xml",
+    "last_out": "C:/Scripts/Simba/BlastFurnace9001/OurExampleTemplateOutput.simba",
+    "header_template": "{$I WaspLib/osrs.simba}\n{$I behaviortree.simba}",
+    "footer_template": "var\n  Bot: TBot;\nbegin\n  Bot.Init();\n  while True do\n    Bot.Tree.Tick();\nend."
 }
