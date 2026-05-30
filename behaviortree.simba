@@ -38,13 +38,13 @@ type
   (*
   ### EBBOperator
   Comparison operators for blackboard conditions.
-  
+
   ```pascal
   HealthCheck := Tree.CreateBlackboardCondition('Health Check', 'Health', EBBOperator.GreaterThan, 50);
   ```
   *)
   EBBOperator = (Equal, NotEqual, GreaterThan, LessThan, GreaterThanOrEqual, LessThanOrEqual);
-  
+
   EBBChangeType = (Create, Update, Delete, Read);
 
   TBlackboardChange = record
@@ -88,10 +88,10 @@ var
 begin
   Inc(Self.StringIntern.TotalOps);
   Hash := Key.Hash();
-  
+
   for i := 0 to High(Self.StringIntern.HashCache) do
   begin
-    if Self.StringIntern.HashCache[i].Valid and 
+    if Self.StringIntern.HashCache[i].Valid and
        (Self.StringIntern.HashCache[i].Hash = Hash) then
     begin
       Inc(Self.StringIntern.CacheHits);
@@ -99,7 +99,7 @@ begin
       Exit;
     end;
   end;
-  
+
   // Cache miss - check string map
   if Self.StringIntern.StringToID.Exists(Key) then
   begin
@@ -134,7 +134,7 @@ begin
       Exit;
     end;
   end;
-  
+
   // No empty slot - expand cache
   SetLength(Self.StringIntern.HashCache, Length(Self.StringIntern.HashCache) + 1);
   i := High(Self.StringIntern.HashCache);
@@ -207,11 +207,11 @@ begin
   Self.Lock.Enter();
   try
     KeyID := Self._InternKey(Key);
-    
+
     if (KeyID < Length(Self.Values)) and Self.ValidSlots[KeyID] then
     begin
       Result := Self.Values[KeyID];
-      
+
       if Self.ActivityEnabled then
       begin
         Change.Key := Key;
@@ -252,13 +252,13 @@ begin
   Self.Lock.Enter();
   try
     KeyID := Self._InternKey(Key);
-    
+
     if KeyID >= Length(Self.Values) then
     begin
       SetLength(Self.Values, KeyID + 1);
       SetLength(Self.ValidSlots, KeyID + 1);
     end;
-    
+
     IsNew := not Self.ValidSlots[KeyID];
     if not IsNew then
       OldValue := Self.Values[KeyID];
@@ -355,7 +355,7 @@ begin
     begin
       OldValue := Self.Values[KeyID];
       Self.ValidSlots[KeyID] := False;
-      
+
       if Self.ActivityEnabled then
       begin
         Change.Key := Key;
@@ -365,7 +365,7 @@ begin
         Change.Timestamp := PerformanceTime();
         Self._AddToActivityStream(Change);
       end;
-      
+
       if Self.EnableTracing then
         WriteLn(Format('[BLACKBOARD] Deleted "%s" (was: %s)', [Key, ToStr(OldValue)]));
     end;
@@ -650,7 +650,7 @@ begin
       SetLength(Self.Values, KeyID + 1);
       SetLength(Self.ValidSlots, KeyID + 1);
     end;
-    
+
     Self.Values[KeyID] := Value;
     Self.ValidSlots[KeyID] := True;
   finally
@@ -680,7 +680,7 @@ begin
       HitRate := (Self.StringIntern.CacheHits / Self.StringIntern.TotalOps) * 100.0
     else
       HitRate := 0.0;
-      
+
     WriteLn('--- Performance Metrics ---');
     WriteLn(Format('Cache Hit Rate: %.1f%%', [HitRate]));
     WriteLn(Format('Total Operations: %d', [Self.StringIntern.TotalOps]));
@@ -699,7 +699,7 @@ procedure TBlackboard._AddToActivityStream(Change: TBlackboardChange);
 begin
   if Length(Self.ActivityStream) >= Self.MaxActivitySize then
   begin
-    Move(Self.ActivityStream[1], Self.ActivityStream[0], 
+    Move(Self.ActivityStream[1], Self.ActivityStream[0],
          (Length(Self.ActivityStream) - 1) * SizeOf(TBlackboardChange));
     Self.ActivityStream[High(Self.ActivityStream)] := Change;
   end
@@ -730,13 +730,13 @@ var
 begin
   SetLength(Result, 0);
   Count := 0;
-  
+
   Self.Lock.Enter();
   try
     for i := 0 to High(Self.ActivityStream) do
       if Self.ActivityStream[i].Timestamp > Timestamp then
         Inc(Count);
-    
+
     if Count > 0 then
     begin
       SetLength(Result, Count);
@@ -776,10 +776,10 @@ begin
       SetLength(Result, 0);
       Exit;
     end;
-    
+
     StartIndex := Max(0, Length(Self.ActivityStream) - MaxCount);
     SetLength(Result, Length(Self.ActivityStream) - StartIndex);
-    
+
     for i := StartIndex to High(Self.ActivityStream) do
       Result[i - StartIndex] := Self.ActivityStream[i];
   finally
@@ -828,7 +828,7 @@ var
   TypeStr: String;
 begin
   Activity := Self.GetRecentActivity(MaxCount);
-  
+
   WriteLn('--- Activity Stream ---');
   if Length(Activity) = 0 then
     WriteLn('(No activity)')
@@ -841,7 +841,7 @@ begin
         EBBChangeType.Delete: TypeStr := 'DELETE';
         EBBChangeType.Read: TypeStr := 'READ';
       end;
-      
+
       if Activity[i].ChangeType = EBBChangeType.Update then
         WriteLn(Format('[%.6f] %s %s: %s -> %s', [
           Activity[i].Timestamp, TypeStr, Activity[i].Key,
@@ -877,7 +877,7 @@ type
   (*
   ### EBTStatus
   Execution status returned by nodes.
-  
+
   ```pascal
   function MyAction(): EBTStatus;
   begin
@@ -895,7 +895,7 @@ type
   (*
   ### EBTDebugLevel
   Debug output verbosity levels.
-  
+
   ```pascal
   MyTree.SetDebugLevel(EBTDebugLevel.Verbose); // Detailed logging
   MyTree.SetDebugLevel(EBTDebugLevel.Silent);  // No logging
@@ -906,7 +906,7 @@ type
   (*
   ### EBTErrorType
   Types of errors that can occur.
-  
+
   ```pascal
   if MyTree.HasErrors() then
   begin
@@ -923,14 +923,14 @@ type
   (*
   ### TBTAction
   Function type for action nodes.
-  
+
   ```pascal
   function MyAction(): EBTStatus;
   begin
     // Your action logic here
     Result := EBTStatus.Success;
   end;
-  
+
   ActionNode := MyTree.CreateAction('My Action', @MyAction);
   ```
   *)
@@ -939,14 +939,14 @@ type
   (*
   ### TBTActionMethod
   Method type for action nodes.
-  
+
   ```pascal
   function TMyAI.MyAction(): EBTStatus;
   begin
     // Access object properties
     Result := EBTStatus.Success;
   end;
-  
+
   ActionNode := MyTree.CreateAction('My Action', @Self.MyAction);
   ```
   *)
@@ -955,13 +955,13 @@ type
   (*
   ### TBTCondition
   Function type for condition nodes.
-  
+
   ```pascal
   function IsEnemyNearby(): Boolean;
   begin
     Result := CalculateEnemyDistance() < 100;
   end;
-  
+
   ConditionNode := MyTree.CreateCondition('Enemy Nearby', @IsEnemyNearby);
   ```
   *)
@@ -970,13 +970,13 @@ type
   (*
   ### TBTConditionMethod
   Method type for condition nodes.
-  
+
   ```pascal
   function TMyAI.IsHealthLow(): Boolean;
   begin
     Result := Self.PlayerHealth < 25;
   end;
-  
+
   ConditionNode := MyTree.CreateCondition('Health Low', @Self.IsHealthLow);
   ```
   *)
@@ -1160,7 +1160,7 @@ type
     RunningChildIndex: Integer;
     ConditionCheckMask: array of Boolean;
     LastActivityTimestamp: Double;
-    WatchedKey: String;
+    WatchedKeys: TStringArray;
   end;
 
   TBTDataGathererNode = record
@@ -1206,7 +1206,7 @@ type
   (*
   ### TBTError
   Error information structure.
-  
+
   ```pascal
   if MyTree.HasErrors() then
   begin
@@ -1253,7 +1253,7 @@ type
     OwnerOfBlackboard: Boolean;
     DebugLevel: EBTDebugLevel;
     CurrentExecutionDepth: Integer;
-    
+
     // Node storage arrays
     ActionNodes: array of TBTActionNode;
     SelectorNodes: array of TBTCompositeNode;
@@ -1293,7 +1293,7 @@ type
     MaxTraceSize: Integer;
     InterruptRequested: Boolean;
     InterruptReason: String;
-  end; 
+  end;
 
 (* TREE *)
 
@@ -1342,26 +1342,26 @@ begin
     EBTNodeType.RepeatUntilSuccess: begin Index := Length(Self.RepeatUntilNodes); SetLength(Self.RepeatUntilNodes, Index + 1); Result := @Self.RepeatUntilNodes[Index]; end;
     EBTNodeType.RepeatUntilFailure: begin Index := Length(Self.RepeatUntilNodes); SetLength(Self.RepeatUntilNodes, Index + 1); Result := @Self.RepeatUntilNodes[Index]; end;
     EBTNodeType.Delay: begin Index := Length(Self.DelayNodes); SetLength(Self.DelayNodes, Index + 1); Result := @Self.DelayNodes[Index]; end;
-    EBTNodeType.Success: 
-      begin 
-        Index := Length(Self.StaticConditionNodes); 
-        SetLength(Self.StaticConditionNodes, Index + 1); 
+    EBTNodeType.Success:
+      begin
+        Index := Length(Self.StaticConditionNodes);
+        SetLength(Self.StaticConditionNodes, Index + 1);
         StaticNode := @Self.StaticConditionNodes[Index];
         StaticNode^.StaticResult := EBTStatus.Success;
         Result := StaticNode;
       end;
-    EBTNodeType.Failure: 
-      begin 
-        Index := Length(Self.StaticConditionNodes); 
-        SetLength(Self.StaticConditionNodes, Index + 1); 
+    EBTNodeType.Failure:
+      begin
+        Index := Length(Self.StaticConditionNodes);
+        SetLength(Self.StaticConditionNodes, Index + 1);
         StaticNode := @Self.StaticConditionNodes[Index];
         StaticNode^.StaticResult := EBTStatus.Failure;
         Result := StaticNode;
       end;
-    EBTNodeType.Running: 
-      begin 
-        Index := Length(Self.StaticConditionNodes); 
-        SetLength(Self.StaticConditionNodes, Index + 1); 
+    EBTNodeType.Running:
+      begin
+        Index := Length(Self.StaticConditionNodes);
+        SetLength(Self.StaticConditionNodes, Index + 1);
         StaticNode := @Self.StaticConditionNodes[Index];
         StaticNode^.StaticResult := EBTStatus.Running;
         Result := StaticNode;
@@ -1387,8 +1387,8 @@ begin
   Result := Length(Self.Subtrees);
   SetLength(Self.Subtrees, Result + 1);
   Self.Subtrees[Result] := Subtree;
-  
-  if Assigned(@Subtree^.Blackboard.Lock) and 
+
+  if Assigned(@Subtree^.Blackboard.Lock) and
      (@Subtree^.Blackboard.Lock <> @Self.Blackboard.Lock) then
   begin
     try
@@ -1398,8 +1398,8 @@ begin
   end;
   Subtree^.Blackboard := Self.Blackboard;
   Subtree^.OwnerOfBlackboard := False;
-  
-  if Subtree^.OwnerOfLock and Assigned(@Subtree^.Lock) and 
+
+  if Subtree^.OwnerOfLock and Assigned(@Subtree^.Lock) and
      (@Subtree^.Lock <> @Self.Lock) then
   begin
     try
@@ -1589,12 +1589,12 @@ begin
     Self.SetError(EBTErrorType.NullReference, 'Root node is not set', '');
     Exit(EBTStatus.Failure);
   end;
-  
+
   PreviousStatusInt := Self.Blackboard.Get('_bt_last_status', 0);
-  
+
   Self.CurrentExecutionDepth := 0;
   Result := Self._ExecuteNode(Self.Root, 0);
-  
+
   StatusChanged := (Integer(Result) <> PreviousStatusInt);
   if StatusChanged then
   begin
@@ -1770,7 +1770,7 @@ begin
     Self.Blackboard.EnableTracing := True
   else
     Self.Blackboard.EnableTracing := False;
-end; 
+end;
 
 (* ACTIONS *)
 
@@ -1894,7 +1894,7 @@ begin
   KeyCheck := Self.Blackboard._CheckKey(Key);
   if KeyCheck <> '' then
     WriteLn(Format('[BT WARNING] BlackboardCondition "%s": %s', [Name, KeyCheck]));
-  
+
   Node := Self._CreateNode(EBTNodeType.BlackboardCondition, Result.Index);
   Node^.Base.Name := Name;
   Node^.BlackboardKey := Key;
@@ -1946,7 +1946,7 @@ begin
     Result := EBTStatus.Success
   else
     Result := EBTStatus.Failure;
-end; 
+end;
 
 (* COMPOSITES *)
 
@@ -2081,7 +2081,7 @@ begin
   KeyCheck := Self.Blackboard._CheckKey(Key);
   if KeyCheck <> '' then
     WriteLn(Format('[BT WARNING] BlackboardSelector "%s": %s', [Name, KeyCheck]));
-  
+
   Node := Self._CreateNode(EBTNodeType.BlackboardSelector, Result.Index);
   Node^.Base.Name := Name;
   Node^.Children := Children;
@@ -2318,7 +2318,7 @@ begin
   begin
     if Handle.NodeType = EBTNodeType.ParallelSelector then
       Exit(EBTStatus.Failure)
-    else 
+    else
       Exit(EBTStatus.Success);
   end;
 
@@ -2330,16 +2330,16 @@ begin
     for i := 0 to ChildCount - 1 do
     begin
       ParallelNode^.ParallelCompleted[i] := False;
-      
+
       ParallelNode^.Executors[i].Tree := @Self;
       ParallelNode^.Executors[i].NodeHandle := Handle;
       ParallelNode^.Executors[i].ChildIndex := i;
       ParallelNode^.Executors[i].Depth := Depth + 1;
-      
+
       TaskID := ParallelNode^.Base.Name + '-child-' + IntToStr(i) + '-' + IntToStr(Time());
       Self.ThreadManager.Submit(TaskID, @ParallelNode^.Executors[i].Execute, 0, True);
     end;
-    
+
     ParallelNode^.ParallelTasksSubmitted := True;
     ParallelNode^.ParallelStartTime := Time();
     Result := EBTStatus.Running;
@@ -2349,7 +2349,7 @@ begin
   CompletedCount := 0;
   SuccessCount := 0;
   FailureCount := 0;
-  
+
   if Assigned(@Self.Lock) then
   begin
     Self.Lock.Enter();
@@ -2409,14 +2409,14 @@ begin
     Result := EBTStatus.Running;
     Exit;
   end;
-  
+
   if Handle.NodeType = EBTNodeType.ParallelSelector then
     Result := EBTStatus.Failure
   else
     Result := EBTStatus.Success;
 
   ParallelNode^.ParallelTasksSubmitted := False;
-end; 
+end;
 
 (*
 ### TBehaviorTree.AddChild
@@ -2473,7 +2473,7 @@ begin
     for i := 0 to High(NewChildren) do
       Children^[StartIndex + i] := NewChildren[i];
   end;
-end; 
+end;
 
 (* DECORATORS *)
 
@@ -2754,15 +2754,15 @@ begin
           EBTStatus.Failure: Result := EBTStatus.Success;
           EBTStatus.Running: Result := EBTStatus.Running;
         end;
-    EBTNodeType.ForceSuccess: 
-        if Self._ExecuteNode(DecoratorNode^.Child, Depth + 1) = EBTStatus.Running then 
-          Result := EBTStatus.Running 
-        else 
+    EBTNodeType.ForceSuccess:
+        if Self._ExecuteNode(DecoratorNode^.Child, Depth + 1) = EBTStatus.Running then
+          Result := EBTStatus.Running
+        else
           Result := EBTStatus.Success;
-    EBTNodeType.ForceFailure: 
-        if Self._ExecuteNode(DecoratorNode^.Child, Depth + 1) = EBTStatus.Running then 
-          Result := EBTStatus.Running 
-        else 
+    EBTNodeType.ForceFailure:
+        if Self._ExecuteNode(DecoratorNode^.Child, Depth + 1) = EBTStatus.Running then
+          Result := EBTStatus.Running
+        else
           Result := EBTStatus.Failure;
   end;
 end;
@@ -2912,7 +2912,7 @@ var
 begin
   LinkNode := @Self.LinkNodes[Handle.Index];
   Result := Self._ExecuteNode(LinkNode^.TargetNode, Depth + 1);
-end; 
+end;
 
 (* REACTIVE *)
 
@@ -2929,21 +2929,23 @@ Use these for dynamic behavior that needs to respond to changing conditions.
 (*
 ### TBehaviorTree.CreateReactiveSelector
 ```pascal
-function TBehaviorTree.CreateReactiveSelector(Name: String; Children: TBTNodeHandleArray = []): TBTNodeHandle;
+function TBehaviorTree.CreateReactiveSelector(Name: String; Children: TBTNodeHandleArray = []; WatchedKeys: TStringArray = []): TBTNodeHandle;
 ```
 Creates a reactive selector that interrupts on blackboard changes.
-When WatchedKey is provided, only interrupts when that specific blackboard key changes.
-When WatchedKey is empty (default), interrupts on any blackboard change.
+When WatchedKeys is empty (default), interrupts on any blackboard change.
+When WatchedKeys contains one or more keys, only interrupts when those specific blackboard keys change.
 
 Example:
 ```pascal
 // Reacts to ALL blackboard changes:
 ReactiveSelector := MyTree.CreateReactiveSelector('Reactive Combat', [Health, Combat, Heal]);
 // Reacts ONLY to changes on the 'Health' key:
-ReactiveSelector := MyTree.CreateReactiveSelector('Reactive Combat', [Health, Combat, Heal], 'Health');
+ReactiveSelector := MyTree.CreateReactiveSelector('Reactive Combat', [Health, Combat, Heal], ['Health']);
+// Reacts to changes on 'Health' OR 'InCombat' keys:
+ReactiveSelector := MyTree.CreateReactiveSelector('Reactive Combat', [Health, Combat, Heal], ['Health', 'InCombat']);
 ```
 *)
-function TBehaviorTree.CreateReactiveSelector(Name: String; Children: TBTNodeHandleArray = []; WatchedKey: String = ''): TBTNodeHandle;
+function TBehaviorTree.CreateReactiveSelector(Name: String; Children: TBTNodeHandleArray = []; WatchedKeys: TStringArray = []): TBTNodeHandle;
 var
   Node: ^TBTReactiveNode;
   i: Integer;
@@ -2953,8 +2955,8 @@ begin
   Node^.Children := Children;
   Node^.RunningChildIndex := -1;
   Node^.LastActivityTimestamp := 0;
-  Node^.WatchedKey := WatchedKey;  
-  
+  Node^.WatchedKeys := WatchedKeys;
+
   SetLength(Node^.ConditionCheckMask, Length(Children));
   SetLength(Node^.LastConditionStates, Length(Children));
   for i := 0 to High(Children) do
@@ -2970,28 +2972,30 @@ begin
     end;
     Node^.LastConditionStates[i] := EBTStatus.Failure;
   end;
-  
+
   Result.NodeType := EBTNodeType.ReactiveSelector;
 end;
 
 (*
 ### TBehaviorTree.CreateReactiveSequence
 ```pascal
-function TBehaviorTree.CreateReactiveSequence(Name: String; Children: TBTNodeHandleArray = []): TBTNodeHandle;
+function TBehaviorTree.CreateReactiveSequence(Name: String; Children: TBTNodeHandleArray = []; WatchedKeys: TStringArray = []): TBTNodeHandle;
 ```
 Creates a reactive sequence that interrupts on blackboard changes.
-When WatchedKey is provided, only interrupts when that specific blackboard key changes.
-When WatchedKey is empty (default), interrupts on any blackboard change.
+When WatchedKeys is empty (default), interrupts on any blackboard change.
+When WatchedKeys contains one or more keys, only interrupts when those specific blackboard keys change.
 
 Example:
 ```pascal
 // Reacts to ALL blackboard changes:
 ReactiveSequence := MyTree.CreateReactiveSequence('Reactive Combat', [Check, Approach, Attack]);
 // Reacts ONLY to changes on the 'Health' key:
-ReactiveSequence := MyTree.CreateReactiveSequence('Reactive Combat', [Check, Approach, Attack], 'Health');
+ReactiveSequence := MyTree.CreateReactiveSequence('Reactive Combat', [Check, Approach, Attack], ['Health']);
+// Reacts to changes on 'Health' OR 'InCombat' keys:
+ReactiveSequence := MyTree.CreateReactiveSequence('Reactive Combat', [Check, Approach, Attack], ['Health', 'InCombat']);
 ```
 *)
-function TBehaviorTree.CreateReactiveSequence(Name: String; Children: TBTNodeHandleArray = []; WatchedKey: String = ''): TBTNodeHandle;
+function TBehaviorTree.CreateReactiveSequence(Name: String; Children: TBTNodeHandleArray = []; WatchedKeys: TStringArray = []): TBTNodeHandle;
 var
   Node: ^TBTReactiveNode;
   i: Integer;
@@ -3001,8 +3005,8 @@ begin
   Node^.Children := Children;
   Node^.RunningChildIndex := -1;
   Node^.LastActivityTimestamp := 0;
-  Node^.WatchedKey := WatchedKey;  
-  
+  Node^.WatchedKeys := WatchedKeys;
+
   SetLength(Node^.ConditionCheckMask, Length(Children));
   SetLength(Node^.LastConditionStates, Length(Children));
   for i := 0 to High(Children) do
@@ -3016,9 +3020,9 @@ begin
         else
             Node^.ConditionCheckMask[i] := False;
     end;
-    Node^.LastConditionStates[i] := EBTStatus.Success;  
+    Node^.LastConditionStates[i] := EBTStatus.Success;
   end;
-  
+
   Result.NodeType := EBTNodeType.ReactiveSequence;
 end;
 
@@ -3045,7 +3049,7 @@ begin
   Node^.UpdateInterval := UpdateIntervalMS;
   Node^.LastUpdateTime := 0;
   Node^.ContinuousUpdate := True;
-  
+
   Result.NodeType := EBTNodeType.DataGatherer;
 end;
 
@@ -3072,7 +3076,7 @@ begin
   Node^.UpdateInterval := UpdateIntervalMS;
   Node^.LastUpdateTime := 0;
   Node^.ContinuousUpdate := True;
-  
+
   Result.NodeType := EBTNodeType.DataGatherer;
 end;
 
@@ -3080,12 +3084,14 @@ end;
 function TBehaviorTree._ExecuteReactiveComposite(Handle: TBTNodeHandle; Depth: Integer): EBTStatus;
 var
   ReactiveNode: ^TBTReactiveNode;
-  i, StartIndex: Integer;
+  i, j, StartIndex: Integer;
   ChildStatus: EBTStatus;
   ActivityChanges: array of TBlackboardChange;
   MustRestart: Boolean;
   RelevantChanges: Integer;
-  LastTimestamp, CurrentTime: Double;  
+  LastTimestamp, CurrentTime: Double;
+  KeyMatch: Boolean;
+  WatchedKeyStr: String;
 begin
   if Handle.NodeType = EBTNodeType.ReactiveSelector then
     ReactiveNode := @Self.ReactiveSelectorNodes[Handle.Index]
@@ -3099,27 +3105,48 @@ begin
 
   LastTimestamp := ReactiveNode^.LastActivityTimestamp;
   CurrentTime := PerformanceTime();
-  
+
   ActivityChanges := Self.Blackboard.GetActivitySince(LastTimestamp);
   RelevantChanges := 0;
   for i := 0 to High(ActivityChanges) do
   begin
     if ActivityChanges[i].ChangeType <> EBBChangeType.Read then
     begin
-      if (ReactiveNode^.WatchedKey = '') or (ActivityChanges[i].Key = ReactiveNode^.WatchedKey) then
-        Inc(RelevantChanges);
+      if Length(ReactiveNode^.WatchedKeys) = 0 then
+        Inc(RelevantChanges)
+      else
+      begin
+        KeyMatch := False;
+        for j := 0 to High(ReactiveNode^.WatchedKeys) do
+          if ActivityChanges[i].Key = ReactiveNode^.WatchedKeys[j] then
+          begin
+            KeyMatch := True;
+            Break;
+          end;
+        if KeyMatch then
+          Inc(RelevantChanges);
+      end;
     end;
   end;
 
   if Self.DebugLevel >= EBTDebugLevel.Verbose then
-    WriteLn(Format('[REACTIVE] %s: WatchedKey=%s, LastTimestamp=%.6f, CurrentTime=%.6f, Found %d total activities, %d relevant changes, RunningChildIndex=%d', 
-      [ReactiveNode^.Base.Name, ReactiveNode^.WatchedKey, LastTimestamp, CurrentTime, Length(ActivityChanges), RelevantChanges, ReactiveNode^.RunningChildIndex]));
+  begin
+    WatchedKeyStr := '';
+    for j := 0 to High(ReactiveNode^.WatchedKeys) do
+    begin
+      if j > 0 then WatchedKeyStr := WatchedKeyStr + ', ';
+      WatchedKeyStr := WatchedKeyStr + ReactiveNode^.WatchedKeys[j];
+    end;
+    if WatchedKeyStr = '' then WatchedKeyStr := '(all)';
+    WriteLn(Format('[REACTIVE] %s: WatchedKeys=[%s], LastTimestamp=%.6f, CurrentTime=%.6f, Found %d total activities, %d relevant changes, RunningChildIndex=%d',
+      [ReactiveNode^.Base.Name, WatchedKeyStr, LastTimestamp, CurrentTime, Length(ActivityChanges), RelevantChanges, ReactiveNode^.RunningChildIndex]));
+  end;
 
   MustRestart := (ReactiveNode^.RunningChildIndex > -1) and (RelevantChanges > 0);
   if MustRestart then
   begin
     if Self.DebugLevel >= EBTDebugLevel.Verbose then
-      WriteLn(Format('[REACTIVE] %s: Interrupting running child %d due to blackboard changes', 
+      WriteLn(Format('[REACTIVE] %s: Interrupting running child %d due to blackboard changes',
         [ReactiveNode^.Base.Name, ReactiveNode^.RunningChildIndex]));
     ReactiveNode^.RunningChildIndex := -1;
   end;
@@ -3131,7 +3158,7 @@ begin
   StartIndex := 0;
   if ReactiveNode^.RunningChildIndex > -1 then
     StartIndex := ReactiveNode^.RunningChildIndex;
-    
+
   if Handle.NodeType = EBTNodeType.ReactiveSelector then
   begin
     for i := StartIndex to High(ReactiveNode^.Children) do
@@ -3166,20 +3193,20 @@ end;
 function TBehaviorTree._ExecuteDataGatherer(Handle: TBTNodeHandle): EBTStatus;
 var
   DataNode: ^TBTDataGathererNode;
-  CurrentTime: Double;  
+  CurrentTime: Double;
   GatherResult: EBTStatus;
   OldValue, NewValue: Variant;
   ShouldUpdate: Boolean;
 begin
   DataNode := @Self.DataGathererNodes[Handle.Index];
   CurrentTime := PerformanceTime();
-  
+
   // Check if we should update based on time since last actual update
   if DataNode^.LastUpdateTime = 0 then
     ShouldUpdate := True  // First execution - always update
   else
     ShouldUpdate := (CurrentTime - DataNode^.LastUpdateTime) >= (DataNode^.UpdateInterval / 1000.0);
-  
+
   if ShouldUpdate then
   begin
     OldValue := Self.Blackboard.Get(DataNode^.BlackboardKey);
@@ -3198,10 +3225,10 @@ begin
         WriteLn(Format('[DATA] Failed to gather data for "%s"', [DataNode^.BlackboardKey]));
       Exit(EBTStatus.Failure);
     end;
-    
+
     // Update timestamp AFTER successful gather function call
     DataNode^.LastUpdateTime := CurrentTime;
-    
+
     NewValue := Self.Blackboard.Get(DataNode^.BlackboardKey);
     if Self.DebugLevel >= EBTDebugLevel.Verbose then
     begin
@@ -3215,7 +3242,7 @@ begin
     Result := EBTStatus.Running
   else
     Result := EBTStatus.Success;
-end; 
+end;
 
 (* UTILITIES *)
 
@@ -3254,7 +3281,7 @@ begin
   // Validate MaxTries parameter
   if MaxTries < -1 then
     MaxTries := -1;
-  
+
   Node := Self._CreateNode(EBTNodeType.RepeatUntilSuccess, Result.Index);
   Node^.Base.Name := Name;
   Node^.Child := Child;
@@ -3290,7 +3317,7 @@ begin
   // Validate MaxTries parameter
   if MaxTries < -1 then
     MaxTries := -1;
-  
+
   Node := Self._CreateNode(EBTNodeType.RepeatUntilFailure, Result.Index);
   Node^.Base.Name := Name;
   Node^.Child := Child;
@@ -3416,7 +3443,7 @@ var
   ChildStatus: EBTStatus;
 begin
   RepeatNode := @Self.RepeatUntilNodes[Handle.Index];
-  
+
   // If MaxTries = 0, fail immediately without executing child
   if RepeatNode^.MaxTries = 0 then
   begin
@@ -3429,26 +3456,26 @@ begin
     end;
     Exit(EBTStatus.Failure);
   end;
-  
+
   ChildStatus := Self._ExecuteNode(RepeatNode^.Child, Depth + 1);
-  
+
   if RepeatNode^.RepeatUntilSuccess then
   begin
     // RepeatUntilSuccess: continue running until child succeeds
     case ChildStatus of
-      EBTStatus.Success: 
+      EBTStatus.Success:
       begin
         Result := EBTStatus.Success;
         RepeatNode^.CurrentTries := 0; // Reset counter on success
       end;
-      EBTStatus.Failure: 
+      EBTStatus.Failure:
       begin
         Inc(RepeatNode^.CurrentTries);
         // Check if we've exceeded max tries after incrementing
         if (RepeatNode^.MaxTries > 0) and (RepeatNode^.CurrentTries >= RepeatNode^.MaxTries) then
         begin
           if Self.DebugLevel >= EBTDebugLevel.Normal then
-            WriteLn(Format('[BT] RepeatUntilSuccess "%s" exceeded MaxTries (%d)', 
+            WriteLn(Format('[BT] RepeatUntilSuccess "%s" exceeded MaxTries (%d)',
               [RepeatNode^.Base.Name, RepeatNode^.MaxTries]));
           Result := EBTStatus.Failure;
         end
@@ -3462,21 +3489,21 @@ begin
   begin
     // RepeatUntilFailure: continue running until child fails
     case ChildStatus of
-      EBTStatus.Success: 
+      EBTStatus.Success:
       begin
         Inc(RepeatNode^.CurrentTries);
         // Check if we've exceeded max tries after incrementing
         if (RepeatNode^.MaxTries > 0) and (RepeatNode^.CurrentTries >= RepeatNode^.MaxTries) then
         begin
           if Self.DebugLevel >= EBTDebugLevel.Normal then
-            WriteLn(Format('[BT] RepeatUntilFailure "%s" exceeded MaxTries (%d)', 
+            WriteLn(Format('[BT] RepeatUntilFailure "%s" exceeded MaxTries (%d)',
               [RepeatNode^.Base.Name, RepeatNode^.MaxTries]));
           Result := EBTStatus.Failure;
         end
         else
           Result := EBTStatus.Running;
       end;
-      EBTStatus.Failure: 
+      EBTStatus.Failure:
       begin
         Result := EBTStatus.Success;
         RepeatNode^.CurrentTries := 0; // Reset counter on success
@@ -3494,7 +3521,7 @@ var
 begin
   DelayNode := @Self.DelayNodes[Handle.Index];
   CurrentTime := Time();
-  
+
   if DelayNode^.StartTime = 0 then
   begin
     DelayNode^.StartTime := CurrentTime;
@@ -3560,7 +3587,7 @@ begin
   end
   else
     Result := 0;
-end; 
+end;
 
 (* FEATURES *)
 
@@ -3649,7 +3676,7 @@ var
   EventNode: ^TBTWaitForEventNode;
 begin
   EventNode := @Self.WaitForEventNodes[Handle.Index];
-  
+
   if not EventNode^.IsListening then
   begin
     if Self.DebugLevel in [EBTDebugLevel.Normal, EBTDebugLevel.Verbose] then
@@ -3657,7 +3684,7 @@ begin
     EventNode^.IsListening := True;
     EventNode^.EventReceived := False;
   end;
-  
+
   // Always check if the event has occurred while listening
   if Self.HasEventOccurred(EventNode^.EventName) then
   begin
@@ -3669,7 +3696,7 @@ begin
         EventNode^.EventData := Self.Blackboard.Get(EventNode^.EventName);
     end;
   end;
-  
+
   if EventNode^.EventReceived then
   begin
     if Self.DebugLevel in [EBTDebugLevel.Normal, EBTDebugLevel.Verbose] then
@@ -3689,10 +3716,10 @@ var
   EventNode: ^TBTBroadcastEventNode;
 begin
   EventNode := @Self.BroadcastEventNodes[Handle.Index];
-  
+
   if Self.DebugLevel in [EBTDebugLevel.Normal, EBTDebugLevel.Verbose] then
     WriteLn(Format('[EVENT] %s broadcasting "%s" event with data: %s', [EventNode^.Base.Name, EventNode^.EventName, ToStr(EventNode^.EventData)]));
-    
+
   Self.BroadcastEvent(EventNode^.EventName, EventNode^.EventData);
   Result := EBTStatus.Success;
 end;
@@ -3703,13 +3730,13 @@ var
   EventKey: String;
 begin
   EventNode := @Self.EventConditionNodes[Handle.Index];
-  EventKey := EventNode^.EventName;  
-  
+  EventKey := EventNode^.EventName;
+
   if Self.Blackboard.HasKey(EventKey) then
   begin
     if EventNode^.ConsumeEvent then
     begin
-      Self.Blackboard.RemoveKey(EventKey);  
+      Self.Blackboard.RemoveKey(EventKey);
     end;
     Result := EBTStatus.Success;
   end
@@ -3829,9 +3856,9 @@ begin
   Self.LastError.ErrorType := ErrorType;
   Self.LastError.NodeName := NodeName;
   Self.LastError.Timestamp := Time();
-  
+
   EnhancedMessage := Message;
-  
+
   case ErrorType of
     EBTErrorType.BlackboardError:
       begin
@@ -3849,19 +3876,19 @@ begin
       end;
     // Other error types use the message as-is for clean, concise output
   end;
-  
+
   if NodeName <> '' then
     FullMessage := Format('%s (Node: "%s")', [EnhancedMessage, NodeName])
   else
     FullMessage := EnhancedMessage;
-  
+
   Self.LastError.Message := FullMessage;
-  
+
   if Self.DebugLevel <> EBTDebugLevel.Silent then
   begin
     WriteLn(Format('[BT ERROR] %s', [FullMessage]));
   end;
-  
+
   // Store in error history
   if Length(Self.ErrorHistory) >= 50 then
   begin
@@ -4074,7 +4101,7 @@ var
   begin
     if Handle.Index < 0 then
       raise Format('[BT ERROR] Invalid handle in "%s": Index < 0', [NodeName]);
-    
+
     case Handle.NodeType of
       EBTNodeType.Action: if Handle.Index >= Length(Self.ActionNodes) then raise Format('[BT ERROR] Invalid Action handle in "%s"', [NodeName]);
       EBTNodeType.Selector: if Handle.Index >= Length(Self.SelectorNodes) then raise Format('[BT ERROR] Invalid Selector handle in "%s"', [NodeName]);
@@ -4090,7 +4117,7 @@ var
     for i := 0 to High(VisitedSubtrees) do
       if VisitedSubtrees[i] = SubtreeIndex then
         raise Format('[BT ERROR] Circular reference detected in subtree %d', [SubtreeIndex]);
-    
+
     SetLength(VisitedSubtrees, Length(VisitedSubtrees) + 1);
     VisitedSubtrees[High(VisitedSubtrees)] := SubtreeIndex;
   end;
@@ -4109,12 +4136,12 @@ var
   Handle: TBTNodeHandle;
 begin
   SetLength(VisitedSubtrees, 0);
-  
+
   if Self.Root.Index < 0 then
     raise '[BT ERROR] No root node set';
-  
+
   ValidateHandle(Self.Root, 'Root');
-  
+
   for i := 0 to High(Self.SubtreeNodes) do
   begin
     if (Self.SubtreeNodes[i].SubtreeIndex >= 0) and (Self.SubtreeNodes[i].SubtreeIndex < Length(Self.Subtrees)) then
@@ -4122,14 +4149,14 @@ begin
     else if Self.SubtreeNodes[i].SubtreeIndex >= Length(Self.Subtrees) then
       raise Format('[BT ERROR] Subtree index %d out of bounds', [Self.SubtreeNodes[i].SubtreeIndex]);
   end;
-  
+
   for i := 0 to High(Self.SelectorNodes) do
   begin
     Handle.Index := i;
     Handle.NodeType := EBTNodeType.Selector;
     ValidateComposite(Handle);
   end;
-  
+
   for i := 0 to High(Self.SequenceNodes) do
   begin
     Handle.Index := i;
@@ -4242,4 +4269,4 @@ begin
       Profile.RunningCount, Profile.AvgTimeMS, Profile.MinTimeMS, Profile.MaxTimeMS]));
   end;
   WriteLn(''.PadLeft(95, '-'));
-end; 
+end;

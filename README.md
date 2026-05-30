@@ -1,6 +1,7 @@
 # XML to Simba Converter
 
-This tool converts visual behavior trees designed in XML format (e.g., from or draw.io) into an executable Simba 2000 script skeleton. It bridges the gap between visual design and the `WaspLib` behavior tree implementation.
+This tool converts visual behavior trees designed in XML format (e.g. draw.io) into an executable Simba 2000 script skeleton. It bridges the gap between visual design and the `WaspLib` behavior tree implementation.
+
 ## Features
 - **Visual to Code**: Converts diagrammatic nodes (Selectors, Sequences, Actions, Decorators) into valid Simba code compatible with the behavior tree library.
 - **Stub Generation**: Automatically generates function stubs for actions and conditions defined in your diagram.

@@ -12,7 +12,7 @@ from typing import List, Dict, Optional, Any
 # ==========================================
 
 class BTNode:
-    def __init__(self, node_id: str, label: str, node_type: str, geometry_x: float = 0, geometry_y: float = 0, has_memory: bool = False, watched_key: Optional[str] = None):
+    def __init__(self, node_id: str, label: str, node_type: str, geometry_x: float = 0, geometry_y: float = 0, has_memory: bool = False, watched_keys: Optional[List[str]] = None):
         self.id = node_id
         self.label = label
         self.node_type = node_type  # 'Selector', 'Sequence', 'Condition', 'Action', 'Root', 'RandomSelector', 'WeightedSelector'
@@ -27,7 +27,7 @@ class BTNode:
         self.repeat_count: Optional[int] = None
         self.condition_reference: Optional[str] = None
         self.decorator_raw_param: Optional[str] = None
-        self.watched_key: Optional[str] = watched_key
+        self.watched_keys: List[str] = watched_keys if watched_keys is not None else []
 
     def add_child(self, child: 'BTNode', weight: float = 0.0):
         self.children.append(child)
@@ -239,7 +239,6 @@ class ReactiveCompositeStrategy(GenerationStrategy):
     def generate(self, node: BTNode, generator_ref: 'SimbaGenerator', indent_level: int) -> str:
         indent = "  " * indent_level
         display_name = node.label.replace("'", "''")
-        bb_key = node.watched_key.replace("'", "''") if node.watched_key else None
 
         simba_code = f"{indent}Self.Tree.{self.method_name}('{display_name}', [\n"
 
@@ -249,8 +248,13 @@ class ReactiveCompositeStrategy(GenerationStrategy):
 
         simba_code += ",\n\n".join(child_codes)
 
-        if bb_key is not None:
-            simba_code += f"\n{indent}], '{bb_key}')"
+        if node.watched_keys:
+            if len(node.watched_keys) == 1:
+                bb_key = node.watched_keys[0].replace("'", "''")
+                simba_code += f"\n{indent}], ['{bb_key}'])"
+            else:
+                keys_str = ", ".join("'" + k.replace("'", "''") + "'" for k in node.watched_keys)
+                simba_code += f"\n{indent}], [{keys_str}])"
         else:
             simba_code += f"\n{indent}])"
         return simba_code
@@ -332,9 +336,9 @@ class GraphParser:
         # 2. Identify Logical Nodes
         logical_nodes: Dict[str, BTNode] = {} # cell_id -> BTNode
 
-        def get_node_info(cell_id: str) -> tuple[str, str, float, float, bool, Optional[str]]:
+        def get_node_info(cell_id: str) -> tuple[str, str, float, float, bool, List[str]]:
             main_cell = self.cells.get(cell_id)
-            if main_cell is None: return ("Unknown", "Action", 0, 0, False, None)
+            if main_cell is None: return ("Unknown", "Action", 0, 0, False, [])
 
             geo = main_cell.find('mxGeometry')
             x = float(geo.get('x', 0)) if geo is not None else 0
@@ -447,14 +451,19 @@ class GraphParser:
             if label == "RootNode":
                 n_type = "Root"
 
-            watched_key = None
+            watched_keys = []
             if n_type in ("ReactiveSelector", "ReactiveSequence"):
-                wk_match = re.search(r"\(['\"]([^'\"]+)['\"]\)", label)
-                if wk_match:
-                    watched_key = wk_match.group(1)
-                    label = re.sub(r"\(['\"][^'\"]*['\"]\)", '', label)
+                paren_match = re.search(r"\((.+)\)", label)
+                if paren_match:
+                    inner = paren_match.group(1)
+                    watched_keys = re.findall(r"['\"]([^'\"]+)['\"]", inner)
+                    if not watched_keys:
+                        watched_keys = [k.strip() for k in inner.split(',') if k.strip()]
+                    label = re.sub(r"\(.*\)", '', label).strip()
+                    if not label:
+                        label = symbol
 
-            return (label, n_type, x, y, has_memory, watched_key)
+            return (label, n_type, x, y, has_memory, watched_keys)
 
         connected_ids = set()
         for s, t, w in self.edges:
@@ -462,8 +471,8 @@ class GraphParser:
             connected_ids.add(t)
             
         for cid in connected_ids:
-            label, n_type, x, y, has_memory, watched_key = get_node_info(cid)
-            logical_nodes[cid] = BTNode(cid, label, n_type, x, y, has_memory, watched_key)
+            label, n_type, x, y, has_memory, watched_keys = get_node_info(cid)
+            logical_nodes[cid] = BTNode(cid, label, n_type, x, y, has_memory, watched_keys)
 
         # 4. Link Nodes
         root_node = None
@@ -663,192 +672,208 @@ class SimbaGenerator:
         return strategy.generate(node, self, indent_level)
 
     def _collect_watched_keys(self, node: BTNode):
-        if node.watched_key and node.watched_key not in self.watched_keys:
-            self.watched_keys.append(node.watched_key)
+        for key in node.watched_keys:
+            if key not in self.watched_keys:
+                self.watched_keys.append(key)
         for child in node.children:
             self._collect_watched_keys(child)
 
-    def _sanitize_key(self, key: str) -> str:
-        return re.sub(r'[^a-zA-Z0-9]', '', key)
-
-    def generate_async_blackboard_types(self) -> str:
+    def generate_async_blackboard(self) -> tuple:
         if not self.watched_keys:
-            return ""
-        lines = []
-        lines.append("// --- Async Blackboard Types ---")
-        lines.append("type")
-        lines.append("  TAsyncBBOpType = (ASYNC_BB_SET, ASYNC_BB_GET);")
-        lines.append("  TAsyncBBOperation = record")
-        lines.append("    OpType: TAsyncBBOpType;")
-        lines.append("    Value: Variant;")
-        lines.append("  end;")
-        lines.append("  TAsyncBBEntry = record")
-        lines.append("    Key: String;")
-        lines.append("    Thread: TThread;")
-        lines.append("    OpQueue: array of TAsyncBBOperation;")
-        lines.append("    QueueLock: TLock;")
-        lines.append("    CachedValue: Variant;")
-        lines.append("    CacheLock: TLock;")
-        lines.append("    CacheValid: Boolean;")
-        lines.append("    DefaultValue: Variant;")
-        lines.append("  end;")
-        lines.append("  TAsyncBlackboard = record")
-        lines.append("    Entries: array of TAsyncBBEntry;")
-        lines.append("  end;")
-        return "\n".join(lines)
+            return ("", "")
 
-    def generate_async_bb_infrastructure(self) -> str:
-        if not self.watched_keys:
-            return ""
-        lines = []
-        lines.append("// --- Async BB Thread Forward Declarations ---")
-        for key in self.watched_keys:
-            safe_key = self._sanitize_key(key)
-            lines.append(f"procedure RunBBThread_{safe_key}; forward;")
-        lines.append("")
-        lines.append("// --- Async Blackboard Infrastructure ---")
-        lines.append("")
-        lines.append("procedure TBot.AsyncBB_Setup();")
-        lines.append("begin")
-        lines.append(f"  SetLength(Self.AsyncBB.Entries, {len(self.watched_keys)});")
+        types_lines = []
+        types_lines.append("// --- Async Blackboard (copy-paste block) ---")
+        types_lines.append("type")
+        types_lines.append("  TAsyncBBOpType = (ASYNC_BB_SET, ASYNC_BB_GET);")
+        types_lines.append("  TAsyncBBOperation = record")
+        types_lines.append("    OpType: TAsyncBBOpType;")
+        types_lines.append("    Value: Variant;")
+        types_lines.append("  end;")
+        types_lines.append("  TAsyncBBEntry = record")
+        types_lines.append("    Key: String;")
+        types_lines.append("    Thread: TThread;")
+        types_lines.append("    OpQueue: array of TAsyncBBOperation;")
+        types_lines.append("    QueueLock: TLock;")
+        types_lines.append("    CacheLock: TLock;")
+        types_lines.append("    CachedValue: Variant;")
+        types_lines.append("    CacheValid: Boolean;")
+        types_lines.append("    DefaultValue: Variant;")
+        types_lines.append("  end;")
+        types_lines.append("  TAsyncBlackboard = record")
+        types_lines.append("    Entries: array of TAsyncBBEntry;")
+        types_lines.append("    procedure Setup();")
+        types_lines.append("    procedure UpdateCache(EntryIndex: Integer; Value: Variant);")
+        types_lines.append("    procedure ProcessQueue(EntryIndex: Integer);")
+        types_lines.append("    function FindIndex(Key: String): Integer;")
+        types_lines.append("    function FindEntryIndexByThread(Thread: TThread): Integer;")
+        types_lines.append("    procedure SetAsync(Key: String; Value: Variant);")
+        types_lines.append("    function GetCached(Key: String): Variant;")
+        types_lines.append("    procedure ThreadExecute(Thread: TThread);")
+        types_lines.append("    procedure StartAll();")
+        types_lines.append("    procedure Init();")
+        types_lines.append("    procedure Free();")
+        types_lines.append("  end;")
+        types_lines.append("// --- End Async Blackboard Types ---")
+        types_section = "\n".join(types_lines)
+
+        impl_lines = []
+        impl_lines.append("// --- Async Blackboard Implementation ---")
+        impl_lines.append("procedure RunBBThread; forward;")
+        impl_lines.append("")
+        impl_lines.append("function TAsyncBlackboard.FindEntryIndexByThread(Thread: TThread): Integer;")
+        impl_lines.append("var")
+        impl_lines.append("  i: Integer;")
+        impl_lines.append("begin")
+        impl_lines.append("  Result := -1;")
+        impl_lines.append("  for i := 0 to High(Self.Entries) do")
+        impl_lines.append("    if Self.Entries[i].Thread = Thread then")
+        impl_lines.append("    begin")
+        impl_lines.append("      Result := i;")
+        impl_lines.append("      Break;")
+        impl_lines.append("    end;")
+        impl_lines.append("end;")
+        impl_lines.append("")
+        impl_lines.append("procedure TAsyncBlackboard.Setup();")
+        impl_lines.append("var")
+        impl_lines.append("  i: Integer;")
+        impl_lines.append("begin")
+        impl_lines.append(f"  SetLength(Self.Entries, {len(self.watched_keys)});")
         for i, key in enumerate(self.watched_keys):
-            lines.append(f"  Self.AsyncBB.Entries[{i}].Key := '{key}';")
-            lines.append(f"  Self.AsyncBB.Entries[{i}].QueueLock := TLock.Create();")
-            lines.append(f"  Self.AsyncBB.Entries[{i}].CacheLock := TLock.Create();")
-            lines.append(f"  Self.AsyncBB.Entries[{i}].CacheValid := False;")
-            lines.append(f"  Self.AsyncBB.Entries[{i}].DefaultValue := False;")
-        lines.append("end;")
-        lines.append("")
-        lines.append("procedure TBot.AsyncBB_UpdateCache(EntryIndex: Integer; Value: Variant);")
-        lines.append("begin")
-        lines.append("  Self.AsyncBB.Entries[EntryIndex].CacheLock.Enter();")
-        lines.append("  Self.AsyncBB.Entries[EntryIndex].CachedValue := Value;")
-        lines.append("  Self.AsyncBB.Entries[EntryIndex].CacheValid := True;")
-        lines.append("  Self.AsyncBB.Entries[EntryIndex].CacheLock.Leave();")
-        lines.append("  Self.Tree.Blackboard.Put(Self.AsyncBB.Entries[EntryIndex].Key, Value);")
-        lines.append("end;")
-        lines.append("")
-        lines.append("procedure TBot.AsyncBB_ProcessQueue(EntryIndex: Integer);")
-        lines.append("var")
-        lines.append("  Ops: array of TAsyncBBOperation;")
-        lines.append("  i: Integer;")
-        lines.append("begin")
-        lines.append("  Self.AsyncBB.Entries[EntryIndex].QueueLock.Enter();")
-        lines.append("  Ops := Copy(Self.AsyncBB.Entries[EntryIndex].OpQueue);")
-        lines.append("  SetLength(Self.AsyncBB.Entries[EntryIndex].OpQueue, 0);")
-        lines.append("  Self.AsyncBB.Entries[EntryIndex].QueueLock.Leave();")
-        lines.append("  for i := 0 to High(Ops) do")
-        lines.append("    if Ops[i].OpType = TAsyncBBOpType.ASYNC_BB_SET then")
-        lines.append("      Self.AsyncBB_UpdateCache(EntryIndex, Ops[i].Value);")
-        lines.append("end;")
-        lines.append("")
-        lines.append("function TBot.AsyncBB_FindIndex(Key: String): Integer;")
-        lines.append("var")
-        lines.append("  i: Integer;")
-        lines.append("begin")
-        lines.append("  Result := -1;")
-        lines.append("  for i := 0 to High(Self.AsyncBB.Entries) do")
-        lines.append("    if Self.AsyncBB.Entries[i].Key = Key then")
-        lines.append("    begin")
-        lines.append("      Result := i;")
-        lines.append("      Break;")
-        lines.append("    end;")
-        lines.append("end;")
-        lines.append("")
-        lines.append("procedure TBot.AsyncBB_SetAsync(Key: String; Value: Variant);")
-        lines.append("var")
-        lines.append("  idx: Integer;")
-        lines.append("begin")
-        lines.append("  idx := Self.AsyncBB_FindIndex(Key);")
-        lines.append("  if idx < 0 then Exit;")
-        lines.append("  Self.AsyncBB.Entries[idx].QueueLock.Enter();")
-        lines.append("  SetLength(Self.AsyncBB.Entries[idx].OpQueue, Length(Self.AsyncBB.Entries[idx].OpQueue) + 1);")
-        lines.append("  Self.AsyncBB.Entries[idx].OpQueue[High(Self.AsyncBB.Entries[idx].OpQueue)].OpType := TAsyncBBOpType.ASYNC_BB_SET;")
-        lines.append("  Self.AsyncBB.Entries[idx].OpQueue[High(Self.AsyncBB.Entries[idx].OpQueue)].Value := Value;")
-        lines.append("  Self.AsyncBB.Entries[idx].QueueLock.Leave();")
-        lines.append("end;")
-        lines.append("")
-        lines.append("function TBot.AsyncBB_GetCached(Key: String): Variant;")
-        lines.append("var")
-        lines.append("  idx: Integer;")
-        lines.append("begin")
-        lines.append("  idx := Self.AsyncBB_FindIndex(Key);")
-        lines.append("  if idx < 0 then Exit;")
-        lines.append("  Self.AsyncBB.Entries[idx].CacheLock.Enter();")
-        lines.append("  if Self.AsyncBB.Entries[idx].CacheValid then")
-        lines.append("    Result := Self.AsyncBB.Entries[idx].CachedValue")
-        lines.append("  else")
-        lines.append("    Result := Self.AsyncBB.Entries[idx].DefaultValue;")
-        lines.append("  Self.AsyncBB.Entries[idx].CacheLock.Leave();")
-        lines.append("end;")
-        lines.append("")
-        lines.append("procedure TBot.AsyncBB_StartAll();")
-        lines.append("begin")
-        for i, key in enumerate(self.watched_keys):
-            safe_key = self._sanitize_key(key)
-            lines.append(f"  Self.AsyncBB.Entries[{i}].Thread := TThread.Create(@RunBBThread_{safe_key});")
-        lines.append("end;")
-        lines.append("")
-        lines.append("procedure TBot.AsyncBB_Free();")
-        lines.append("var")
-        lines.append("  i: Integer;")
-        lines.append("begin")
-        lines.append("  for i := 0 to High(Self.AsyncBB.Entries) do")
-        lines.append("  begin")
-        lines.append("    if Self.AsyncBB.Entries[i].Thread <> nil then")
-        lines.append("    begin")
-        lines.append("      Self.AsyncBB.Entries[i].Thread.Terminate();")
-        lines.append("      Self.AsyncBB.Entries[i].Thread.WaitForTerminate();")
-        lines.append("      Self.AsyncBB.Entries[i].Thread.Free();")
-        lines.append("    end;")
-        lines.append("    if Self.AsyncBB.Entries[i].QueueLock <> nil then")
-        lines.append("      Self.AsyncBB.Entries[i].QueueLock.Free();")
-        lines.append("    if Self.AsyncBB.Entries[i].CacheLock <> nil then")
-        lines.append("      Self.AsyncBB.Entries[i].CacheLock.Free();")
-        lines.append("  end;")
-        lines.append("end;")
-        return "\n".join(lines)
+            impl_lines.append(f"  Self.Entries[{i}].Key := '{key}';")
+        impl_lines.append("  for i := 0 to High(Self.Entries) do")
+        impl_lines.append("  begin")
+        impl_lines.append("    Self.Entries[i].QueueLock := TLock.Create();")
+        impl_lines.append("    Self.Entries[i].CacheLock := TLock.Create();")
+        impl_lines.append("    Self.Entries[i].CacheValid := False;")
+        impl_lines.append("    Self.Entries[i].DefaultValue := False;")
+        impl_lines.append("  end;")
+        impl_lines.append("end;")
+        impl_lines.append("")
+        impl_lines.append("procedure TAsyncBlackboard.UpdateCache(EntryIndex: Integer; Value: Variant);")
+        impl_lines.append("begin")
+        impl_lines.append("  Self.Entries[EntryIndex].CacheLock.Enter();")
+        impl_lines.append("  Self.Entries[EntryIndex].CachedValue := Value;")
+        impl_lines.append("  Self.Entries[EntryIndex].CacheValid := True;")
+        impl_lines.append("  Self.Entries[EntryIndex].CacheLock.Leave();")
+        impl_lines.append("  Bot.Tree.Blackboard.Put(Self.Entries[EntryIndex].Key, Value);")
+        impl_lines.append("end;")
+        impl_lines.append("")
+        impl_lines.append("procedure TAsyncBlackboard.ProcessQueue(EntryIndex: Integer);")
+        impl_lines.append("var")
+        impl_lines.append("  Ops: array of TAsyncBBOperation;")
+        impl_lines.append("  i: Integer;")
+        impl_lines.append("begin")
+        impl_lines.append("  Self.Entries[EntryIndex].QueueLock.Enter();")
+        impl_lines.append("  Ops := Copy(Self.Entries[EntryIndex].OpQueue);")
+        impl_lines.append("  SetLength(Self.Entries[EntryIndex].OpQueue, 0);")
+        impl_lines.append("  Self.Entries[EntryIndex].QueueLock.Leave();")
+        impl_lines.append("  for i := 0 to High(Ops) do")
+        impl_lines.append("    if Ops[i].OpType = TAsyncBBOpType.ASYNC_BB_SET then")
+        impl_lines.append("      Self.UpdateCache(EntryIndex, Ops[i].Value);")
+        impl_lines.append("end;")
+        impl_lines.append("")
+        impl_lines.append("function TAsyncBlackboard.FindIndex(Key: String): Integer;")
+        impl_lines.append("var")
+        impl_lines.append("  i: Integer;")
+        impl_lines.append("begin")
+        impl_lines.append("  Result := -1;")
+        impl_lines.append("  for i := 0 to High(Self.Entries) do")
+        impl_lines.append("    if Self.Entries[i].Key = Key then")
+        impl_lines.append("    begin")
+        impl_lines.append("      Result := i;")
+        impl_lines.append("      Break;")
+        impl_lines.append("    end;")
+        impl_lines.append("end;")
+        impl_lines.append("")
+        impl_lines.append("procedure TAsyncBlackboard.SetAsync(Key: String; Value: Variant);")
+        impl_lines.append("var")
+        impl_lines.append("  idx: Integer;")
+        impl_lines.append("begin")
+        impl_lines.append("  idx := Self.FindIndex(Key);")
+        impl_lines.append("  if idx < 0 then Exit;")
+        impl_lines.append("  Self.Entries[idx].QueueLock.Enter();")
+        impl_lines.append("  SetLength(Self.Entries[idx].OpQueue, Length(Self.Entries[idx].OpQueue) + 1);")
+        impl_lines.append("  Self.Entries[idx].OpQueue[High(Self.Entries[idx].OpQueue)].OpType := TAsyncBBOpType.ASYNC_BB_SET;")
+        impl_lines.append("  Self.Entries[idx].OpQueue[High(Self.Entries[idx].OpQueue)].Value := Value;")
+        impl_lines.append("  Self.Entries[idx].QueueLock.Leave();")
+        impl_lines.append("end;")
+        impl_lines.append("")
+        impl_lines.append("function TAsyncBlackboard.GetCached(Key: String): Variant;")
+        impl_lines.append("var")
+        impl_lines.append("  idx: Integer;")
+        impl_lines.append("begin")
+        impl_lines.append("  idx := Self.FindIndex(Key);")
+        impl_lines.append("  if idx < 0 then Exit;")
+        impl_lines.append("  Self.Entries[idx].CacheLock.Enter();")
+        impl_lines.append("  if Self.Entries[idx].CacheValid then")
+        impl_lines.append("    Result := Self.Entries[idx].CachedValue")
+        impl_lines.append("  else")
+        impl_lines.append("    Result := Self.Entries[idx].DefaultValue;")
+        impl_lines.append("  Self.Entries[idx].CacheLock.Leave();")
+        impl_lines.append("end;")
+        impl_lines.append("")
+        impl_lines.append("procedure TAsyncBlackboard.ThreadExecute(Thread: TThread);")
+        impl_lines.append("var")
+        impl_lines.append("  EntryIdx: Integer;")
+        impl_lines.append("begin")
+        impl_lines.append("  EntryIdx := Self.FindEntryIndexByThread(Thread);")
+        impl_lines.append("  if EntryIdx < 0 then Exit;")
+        impl_lines.append("  while not Thread.IsTerminated do")
+        impl_lines.append("  begin")
+        impl_lines.append("    try")
+        impl_lines.append("      Self.ProcessQueue(EntryIdx);")
+        impl_lines.append("      // PLACEHOLDER: Replace with actual computation")
+        impl_lines.append("      //   e.g. Self.UpdateCache(EntryIdx, ComputeMyValue());")
+        impl_lines.append("      Self.UpdateCache(EntryIdx, False);")
+        impl_lines.append("    except")
+        impl_lines.append("    end;")
+        impl_lines.append("    Sleep(1);")
+        impl_lines.append("  end;")
+        impl_lines.append("end;")
+        impl_lines.append("")
+        impl_lines.append("procedure TAsyncBlackboard.StartAll();")
+        impl_lines.append("var")
+        impl_lines.append("  i: Integer;")
+        impl_lines.append("begin")
+        impl_lines.append("  for i := 0 to High(Self.Entries) do")
+        impl_lines.append("    Self.Entries[i].Thread := TThread.Create(@RunBBThread);")
+        impl_lines.append("end;")
+        impl_lines.append("")
+        impl_lines.append("procedure TAsyncBlackboard.Init();")
+        impl_lines.append("begin")
+        impl_lines.append("  Self.Setup();")
+        impl_lines.append("  Self.StartAll();")
+        impl_lines.append("  AddOnTerminate(@Self.Free);")
+        impl_lines.append("end;")
+        impl_lines.append("")
+        impl_lines.append("procedure TAsyncBlackboard.Free();")
+        impl_lines.append("var")
+        impl_lines.append("  i: Integer;")
+        impl_lines.append("begin")
+        impl_lines.append("  for i := 0 to High(Self.Entries) do")
+        impl_lines.append("  begin")
+        impl_lines.append("    if Self.Entries[i].Thread <> nil then")
+        impl_lines.append("    begin")
+        impl_lines.append("      Self.Entries[i].Thread.Terminate();")
+        impl_lines.append("      Self.Entries[i].Thread.WaitForTerminate();")
+        impl_lines.append("      Self.Entries[i].Thread.Free();")
+        impl_lines.append("    end;")
+        impl_lines.append("    if Self.Entries[i].QueueLock <> nil then")
+        impl_lines.append("      Self.Entries[i].QueueLock.Free();")
+        impl_lines.append("    if Self.Entries[i].CacheLock <> nil then")
+        impl_lines.append("      Self.Entries[i].CacheLock.Free();")
+        impl_lines.append("  end;")
+        impl_lines.append("end;")
+        impl_lines.append("")
+        impl_lines.append("procedure RunBBThread;")
+        impl_lines.append("begin")
+        impl_lines.append("  Bot.BB.ThreadExecute(CurrentThread());")
+        impl_lines.append("end;")
+        impl_lines.append("// --- End Async Blackboard Implementation ---")
+        impl_section = "\n".join(impl_lines)
 
-    def generate_per_key_thread_procedures(self) -> str:
-        if not self.watched_keys:
-            return ""
-        lines = []
-        lines.append("// --- Async Blackboard Thread Procedures ---")
-        lines.append("")
-        for i, key in enumerate(self.watched_keys):
-            safe_key = self._sanitize_key(key)
-            lines.append(f"procedure BBThread_{safe_key}_Execute(Thread: TThread);")
-            lines.append("begin")
-            lines.append("  while not Thread.IsTerminated do")
-            lines.append("  begin")
-            lines.append("    try")
-            lines.append(f"      Bot.AsyncBB_ProcessQueue({i});")
-            lines.append(f"      // PLACEHOLDER: Replace with actual computation")
-            lines.append(f"      //   e.g. Bot.AsyncBB_UpdateCache({i}, ComputeMyValue());")
-            lines.append(f"      Bot.AsyncBB_UpdateCache({i}, False);")
-            lines.append("    except")
-            lines.append("      // Silent error handling during background execution")
-            lines.append("    end;")
-            lines.append("    Sleep(1);")
-            lines.append("  end;")
-            lines.append("end;")
-            lines.append("")
-            lines.append(f"procedure RunBBThread_{safe_key};")
-            lines.append("begin")
-            lines.append(f"  BBThread_{safe_key}_Execute(CurrentThread());")
-            lines.append("end;")
-            lines.append("")
-        return "\n".join(lines)
-
-    def generate_async_bb_init_section(self) -> str:
-        if not self.watched_keys:
-            return ""
-        lines = []
-        lines.append("  // Async Blackboard Init")
-        lines.append("  Self.AsyncBB_Setup();")
-        lines.append("  Self.AsyncBB_StartAll();")
-        lines.append("  AddOnTerminate(@Self.AsyncBB_Free);")
-        return "\n".join(lines) + "\n"
+        return (types_section, impl_section)
 
 # ==========================================
 # GUI Application
@@ -967,26 +992,22 @@ class ConverterApp:
             tree_code = gen.generate_code(root_node)
             placeholders = gen.generate_placeholders()
             forward_decls = gen.generate_forward_declarations()
-            async_bb_types = gen.generate_async_blackboard_types()
-            async_bb_infra = gen.generate_async_bb_infrastructure()
-            async_bb_threads = gen.generate_per_key_thread_procedures()
-            async_bb_init = gen.generate_async_bb_init_section()
+            async_bb_types, async_bb_impl = gen.generate_async_blackboard()
 
             # 3. Assemble
             user_header = self.header_text.get("1.0", tk.END).strip()
             user_footer = self.footer_text.get("1.0", tk.END).strip()
             
-            async_field = "\n    AsyncBB: TAsyncBlackboard;" if gen.watched_keys else ""
-            bot_record = f"type\n  TBot = record\n    MainForm: TScriptForm;\n    Tree: TBehaviorTree;{async_field}\n    MainConfig: TConfigJSON;\n  end;"
+            bb_field = "\n    BB: TAsyncBlackboard;" if gen.watched_keys else ""
+            bb_init_call = "  Self.BB.Init();\n" if gen.watched_keys else ""
+            bot_record = f"type\n  TBot = record\n    MainForm: TScriptForm;\n    Tree: TBehaviorTree;{bb_field}\n    MainConfig: TConfigJSON;\n  end;"
             bot_var = "var\n  Bot: TBot;"
             init_start = "procedure TBot.Init();\nbegin\n  Self.Tree.Setup('MyBot');"
             init_end = "  Self.Tree.PrintStructure();\n  AddOnTerminate(@Self.Tree.Free);\nend;"
 
             forward_section = f"{forward_decls}\n" if forward_decls else ""
             async_bb_types_section = f"{async_bb_types}\n" if async_bb_types else ""
-            async_bb_infra_section = f"{async_bb_infra}\n" if async_bb_infra else ""
-            async_bb_threads_section = f"{async_bb_threads}\n" if async_bb_threads else ""
-            async_bb_init_section = f"{async_bb_init}\n" if async_bb_init else ""
+            async_bb_impl_section = f"{async_bb_impl}\n" if async_bb_impl else ""
 
             full_script = (
                 f"{user_header}\n\n"
@@ -995,12 +1016,11 @@ class ConverterApp:
                 f"{bot_var}\n\n"
                 f"{forward_section}"
                 f"{placeholders}\n"
-                f"{async_bb_infra_section}"
-                f"{async_bb_threads_section}"
+                f"{async_bb_impl_section}"
                 f"{init_start}\n"
                 f"  // Generated Tree\n"
                 f"  Self.Tree.Root := {tree_code};\n\n"
-                f"{async_bb_init_section}"
+                f"{bb_init_call}"
                 f"{init_end}\n\n"
                 f"{user_footer}"
             )

@@ -6,3 +6,4 @@ xml_converter_settings.json
 /.kilo
 /__pycache__
 *.spec
+*.simba
